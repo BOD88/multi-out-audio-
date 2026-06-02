@@ -41,6 +41,7 @@ class AudioRouter:
     """
 
     SAMPLE_RATE: int = 48_000
+    SUPPORTED_SAMPLE_RATES = [44_100, 48_000, 96_000]
     CHANNELS: int = 2
     BLOCK_SIZE: int = 1024
     DTYPE: str = "float32"
@@ -102,6 +103,22 @@ class AudioRouter:
         # Performance monitoring
         self._cb_durations: collections.deque = collections.deque(maxlen=100)
         self._buffer_underruns: int = 0
+
+        # Equalizer (lazy import)
+        self._eq = None
+        self._eq_enabled: bool = False
+
+        # Limiter
+        self._limiter_enabled: bool = False
+        self._limiter_threshold: float = 0.95
+
+        # Waveform data for visualizer (ring buffer of downsampled peaks)
+        self._waveform_callback: Optional[Callable[[np.ndarray], None]] = None
+
+        # Scheduled recording
+        self._recording_duration_s: Optional[float] = None
+        self._recording_start_time: Optional[float] = None
+        self.on_scheduled_recording_done: Optional[Callable[[], None]] = None
 
     # --------------------------------------------------------------- discovery --
 
@@ -257,6 +274,105 @@ class AudioRouter:
     def get_device_errors(self) -> Dict[int, str]:
         return dict(self._device_errors)
 
+    # ---------------------------------------------------------- equalizer --
+
+    def get_equalizer(self):
+        """Return the Equalizer instance, creating it lazily."""
+        if self._eq is None:
+            try:
+                from equalizer import Equalizer
+                self._eq = Equalizer(sample_rate=self.SAMPLE_RATE, channels=self.CHANNELS)
+            except ImportError:
+                logger.warning("Equalizer module not available (scipy required)")
+                return None
+        return self._eq
+
+    def set_eq_enabled(self, enabled: bool) -> None:
+        self._eq_enabled = enabled
+        eq = self.get_equalizer()
+        if eq is not None:
+            eq.set_enabled(enabled)
+
+    def is_eq_enabled(self) -> bool:
+        return self._eq_enabled
+
+    # ---------------------------------------------------------- limiter --
+
+    def set_limiter_enabled(self, enabled: bool) -> None:
+        self._limiter_enabled = enabled
+
+    def is_limiter_enabled(self) -> bool:
+        return self._limiter_enabled
+
+    def set_limiter_threshold(self, threshold: float) -> None:
+        self._limiter_threshold = max(0.1, min(1.0, threshold))
+
+    def get_limiter_threshold(self) -> float:
+        return self._limiter_threshold
+
+    def _apply_limiter(self, data: np.ndarray) -> np.ndarray:
+        """Soft-clip / limit peaks above threshold."""
+        if not self._limiter_enabled:
+            return data
+        threshold = self._limiter_threshold
+        abs_data = np.abs(data)
+        mask = abs_data > threshold
+        if not np.any(mask):
+            return data
+        # Soft knee compression above threshold
+        result = data.copy()
+        ratio = 0.2  # compression ratio above threshold
+        excess = abs_data[mask] - threshold
+        compressed = threshold + excess * ratio
+        result[mask] = np.sign(data[mask]) * compressed
+        return result
+
+    # -------------------------------------------------------- sample rate --
+
+    def set_sample_rate(self, rate: int) -> None:
+        """Set the sample rate. Takes effect on next start_routing()."""
+        if rate in self.SUPPORTED_SAMPLE_RATES:
+            self.SAMPLE_RATE = rate
+            # Reset EQ filters for new sample rate
+            if self._eq is not None:
+                try:
+                    from equalizer import Equalizer
+                    gains = self._eq.get_gains()
+                    self._eq = Equalizer(sample_rate=rate, channels=self.CHANNELS)
+                    self._eq.set_gains(gains)
+                    self._eq.set_enabled(self._eq_enabled)
+                except Exception:
+                    pass
+
+    def get_sample_rate(self) -> int:
+        return self.SAMPLE_RATE
+
+    # ------------------------------------------------- waveform callback --
+
+    def set_waveform_callback(self, callback: Optional[Callable[[np.ndarray], None]]) -> None:
+        """Set callback to push audio blocks to a waveform visualizer."""
+        self._waveform_callback = callback
+
+    # ------------------------------------------------ scheduled recording --
+
+    def start_scheduled_recording(self, duration_s: float) -> None:
+        """Start recording for a specified duration in seconds."""
+        self._recording_duration_s = duration_s
+        self._recording_start_time = time.time()
+        self.start_recording()
+
+    def check_scheduled_recording(self) -> None:
+        """Check if a scheduled recording has reached its duration."""
+        if (self._is_recording
+                and self._recording_duration_s is not None
+                and self._recording_start_time is not None):
+            elapsed = time.time() - self._recording_start_time
+            if elapsed >= self._recording_duration_s:
+                self._recording_duration_s = None
+                self._recording_start_time = None
+                if self.on_scheduled_recording_done:
+                    self.on_scheduled_recording_done()
+
     # -------------------------------------------------------------- metering --
 
     def get_master_peak(self) -> List[float]:
@@ -292,10 +408,31 @@ class AudioRouter:
                 data = data[:, :2]
 
             block = data.astype(self.DTYPE, copy=True)
+
+            # Apply EQ processing
+            if self._eq_enabled and self._eq is not None:
+                try:
+                    block = self._eq.process(block)
+                except Exception:
+                    pass  # Pass through on EQ errors
+
+            # Apply limiter
+            block = self._apply_limiter(block)
+
             self._audio_buffer = block
+
+            # Push to waveform visualizer
+            if self._waveform_callback is not None:
+                try:
+                    self._waveform_callback(block)
+                except Exception:
+                    pass
 
             # Store in delay ring buffer for delay compensation
             self._delay_buffer.append(block.copy())
+
+            # Check scheduled recording timer
+            self.check_scheduled_recording()
 
             # Write to recording file if active
             with self._recording_lock:

@@ -12,6 +12,7 @@ Profiles store:
   • Capture source device name
 """
 
+import json
 import logging
 from typing import Dict, List, Optional
 
@@ -115,3 +116,42 @@ class ProfileManager:
         self._profiles[new_name] = profile
         self._save()
         return True
+
+    def export_to_file(self, file_path: str) -> bool:
+        """Export all profiles to a JSON file."""
+        try:
+            data = {name: p.to_dict() for name, p in self._profiles.items()}
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            logger.info("Profiles exported to %s", file_path)
+            return True
+        except Exception as exc:
+            logger.error("Failed to export profiles: %s", exc)
+            return False
+
+    def import_from_file(self, file_path: str) -> int:
+        """
+        Import profiles from a JSON file.
+        Returns the number of profiles successfully imported.
+        """
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as exc:
+            logger.error("Failed to read profile file: %s", exc)
+            return 0
+
+        count = 0
+        for name, profile_data in data.items():
+            try:
+                profile = AudioProfile.from_dict(profile_data)
+                profile.name = name
+                self._profiles[name] = profile
+                count += 1
+            except Exception as exc:
+                logger.warning("Skipping invalid profile '%s': %s", name, exc)
+
+        if count > 0:
+            self._save()
+            logger.info("Imported %d profile(s) from %s", count, file_path)
+        return count

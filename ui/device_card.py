@@ -11,7 +11,8 @@ Shows:
   • Mute button
 """
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QMimeData
+from PyQt5.QtGui import QDrag, QPixmap
 from PyQt5.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -43,6 +44,8 @@ class DeviceCard(QFrame):
     volume_changed = pyqtSignal(int, float)
     mute_changed = pyqtSignal(int, bool)
     delay_changed = pyqtSignal(int, float)  # (device_id, delay_ms)
+    drag_started = pyqtSignal(int)  # device_id being dragged
+    drop_received = pyqtSignal(int, int)  # (source_device_id, target_device_id)
 
     def __init__(self, device_info: dict, parent=None) -> None:
         super().__init__(parent)
@@ -56,6 +59,7 @@ class DeviceCard(QFrame):
         self.setObjectName("device_card")
         self.setFrameShape(QFrame.StyledPanel)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setAcceptDrops(True)
 
         self._build_ui()
         self._connect_signals()
@@ -234,3 +238,54 @@ class DeviceCard(QFrame):
         self.setProperty("active", "true" if active else "false")
         self.style().unpolish(self)
         self.style().polish(self)
+
+    # ── Drag and drop for reordering ──
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self._drag_start_pos = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if not (event.buttons() & Qt.LeftButton):
+            return
+        if not hasattr(self, '_drag_start_pos'):
+            return
+        distance = (event.pos() - self._drag_start_pos).manhattanLength()
+        if distance < 20:
+            return
+
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setText(str(self._device_id))
+        drag.setMimeData(mime)
+
+        # Create a semi-transparent pixmap of the card
+        pixmap = self.grab()
+        pixmap.setDevicePixelRatio(2.0)
+        drag.setPixmap(pixmap.scaled(
+            pixmap.width() // 2, pixmap.height() // 2,
+            Qt.KeepAspectRatio, Qt.SmoothTransformation
+        ))
+
+        self.drag_started.emit(self._device_id)
+        drag.exec_(Qt.MoveAction)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if event.mimeData().hasText():
+            try:
+                int(event.mimeData().text())
+                event.acceptProposedAction()
+            except ValueError:
+                event.ignore()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        try:
+            source_id = int(event.mimeData().text())
+            if source_id != self._device_id:
+                self.drop_received.emit(source_id, self._device_id)
+            event.acceptProposedAction()
+        except ValueError:
+            event.ignore()

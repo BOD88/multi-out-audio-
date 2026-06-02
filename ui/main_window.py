@@ -25,18 +25,20 @@ Layout
 """
 
 import logging
+import json
 import os
 import sys
 import tempfile
 from typing import Dict, List, Optional
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSlot
-from PyQt5.QtGui import QIcon, QKeySequence
+from PyQt5.QtCore import Qt, QTimer, QMimeData, pyqtSlot
+from PyQt5.QtGui import QIcon, QKeySequence, QDesktopServices
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QGroupBox,
@@ -53,9 +55,11 @@ from PyQt5.QtWidgets import (
     QShortcut,
     QSizePolicy,
     QSlider,
+    QSpinBox,
     QSplitter,
     QStatusBar,
     QSystemTrayIcon,
+    QTabWidget,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -118,6 +122,19 @@ class MainWindow(QMainWindow):
         # Device names list for change detection
         self._known_device_names: List[str] = []
 
+        # Mini window reference
+        self._mini_window = None
+
+        # Hotkey manager
+        self._hotkey_mgr = None
+
+        # Waveform widget reference
+        self._waveform_widget = None
+
+        # Ducking state
+        self._ducking_active = False
+        self._ducking_original_volume: Optional[float] = None
+
         self._setup_window()
         self._build_ui()
         self._setup_tray_icon()
@@ -127,6 +144,7 @@ class MainWindow(QMainWindow):
         self._populate_devices()
         self._populate_apps()
         self._start_timers()
+        self._setup_hotkeys()
         self._show_first_run_dialog()
 
     # ---------------------------------------------------------------- window setup --
@@ -209,6 +227,15 @@ class MainWindow(QMainWindow):
         )
         tb.addWidget(self._btn_record)
 
+        # Timed recording controls
+        self._spn_rec_minutes = QSpinBox()
+        self._spn_rec_minutes.setRange(0, 999)
+        self._spn_rec_minutes.setValue(0)
+        self._spn_rec_minutes.setSuffix(" min")
+        self._spn_rec_minutes.setToolTip("Timed recording duration (0 = unlimited)")
+        self._spn_rec_minutes.setFixedWidth(80)
+        tb.addWidget(self._spn_rec_minutes)
+
         tb.addSeparator()
 
         # Status indicator
@@ -266,6 +293,16 @@ class MainWindow(QMainWindow):
         self._btn_delete_profile.setFixedWidth(32)
         tb.addWidget(self._btn_delete_profile)
 
+        self._btn_export_profile = QPushButton("📤")
+        self._btn_export_profile.setToolTip("Export all profiles to a JSON file")
+        self._btn_export_profile.setFixedWidth(32)
+        tb.addWidget(self._btn_export_profile)
+
+        self._btn_import_profile = QPushButton("📥")
+        self._btn_import_profile.setToolTip("Import profiles from a JSON file")
+        self._btn_import_profile.setFixedWidth(32)
+        tb.addWidget(self._btn_import_profile)
+
         tb.addSeparator()
 
         # Theme toggle
@@ -274,6 +311,12 @@ class MainWindow(QMainWindow):
         self._btn_theme.setFixedWidth(32)
         tb.addWidget(self._btn_theme)
 
+        # Mini mode button
+        self._btn_mini = QPushButton("🔲")
+        self._btn_mini.setToolTip("Switch to compact mini-mode window")
+        self._btn_mini.setFixedWidth(32)
+        tb.addWidget(self._btn_mini)
+
         # Auto-start checkbox
         self._chk_auto_start = QCheckBox("Auto-start")
         self._chk_auto_start.setToolTip(
@@ -281,6 +324,12 @@ class MainWindow(QMainWindow):
             "when the application launches."
         )
         tb.addWidget(self._chk_auto_start)
+
+        # Notification sounds checkbox
+        self._chk_notifications = QCheckBox("🔔")
+        self._chk_notifications.setToolTip("Enable notification sounds for events")
+        self._chk_notifications.setChecked(True)
+        tb.addWidget(self._chk_notifications)
 
         self._populate_source_combo()
         self._refresh_profile_combo()
@@ -353,6 +402,68 @@ class MainWindow(QMainWindow):
         self._btn_mute_all.setToolTip("Mute all output devices instantly\nShortcut: Ctrl+M")
         layout.addWidget(self._btn_mute_all)
 
+        # ── Limiter toggle ──
+        limiter_frame = QFrame()
+        limiter_lay = QVBoxLayout(limiter_frame)
+        limiter_lay.setContentsMargins(0, 8, 0, 0)
+        limiter_lay.setSpacing(4)
+
+        lbl_limiter = QLabel("LIMITER")
+        lbl_limiter.setObjectName("lbl_section")
+        limiter_lay.addWidget(lbl_limiter, alignment=Qt.AlignHCenter)
+
+        self._chk_limiter = QCheckBox("Enable Limiter")
+        self._chk_limiter.setToolTip(
+            "Soft-clip audio peaks to prevent clipping distortion"
+        )
+        limiter_lay.addWidget(self._chk_limiter)
+
+        thresh_row = QHBoxLayout()
+        thresh_lbl = QLabel("Threshold:")
+        thresh_lbl.setStyleSheet(f"color: {self._colours['text_secondary']}; font-size: 10px;")
+        thresh_row.addWidget(thresh_lbl)
+        self._sld_limiter_thresh = QSlider(Qt.Horizontal)
+        self._sld_limiter_thresh.setRange(50, 100)
+        self._sld_limiter_thresh.setValue(95)
+        self._sld_limiter_thresh.setToolTip("Limiter threshold (50%–100%)")
+        thresh_row.addWidget(self._sld_limiter_thresh)
+        self._lbl_limiter_thresh = QLabel("95%")
+        self._lbl_limiter_thresh.setStyleSheet(f"color: {self._colours['text_secondary']}; font-size: 10px;")
+        thresh_row.addWidget(self._lbl_limiter_thresh)
+        limiter_lay.addLayout(thresh_row)
+
+        layout.addWidget(limiter_frame)
+
+        # ── Audio Format ──
+        format_frame = QFrame()
+        format_lay = QVBoxLayout(format_frame)
+        format_lay.setContentsMargins(0, 8, 0, 0)
+        format_lay.setSpacing(4)
+
+        lbl_format = QLabel("FORMAT")
+        lbl_format.setObjectName("lbl_section")
+        format_lay.addWidget(lbl_format, alignment=Qt.AlignHCenter)
+
+        sr_row = QHBoxLayout()
+        sr_lbl = QLabel("Sample Rate:")
+        sr_lbl.setStyleSheet(f"color: {self._colours['text_secondary']}; font-size: 10px;")
+        sr_row.addWidget(sr_lbl)
+        self._cmb_sample_rate = QComboBox()
+        self._cmb_sample_rate.addItems(["44100 Hz", "48000 Hz", "96000 Hz"])
+        self._cmb_sample_rate.setCurrentIndex(1)  # 48000 default
+        self._cmb_sample_rate.setToolTip("Audio sample rate (takes effect on next routing start)")
+        sr_row.addWidget(self._cmb_sample_rate)
+        format_lay.addLayout(sr_row)
+
+        layout.addWidget(format_frame)
+
+        # ── Auto-Start with Windows ──
+        self._chk_auto_start_win = QCheckBox("Start with Windows")
+        self._chk_auto_start_win.setToolTip(
+            "Launch Multi-Output Audio Console automatically when you log in to Windows"
+        )
+        layout.addWidget(self._chk_auto_start_win)
+
         layout.addStretch()
         return panel
 
@@ -372,12 +483,31 @@ class MainWindow(QMainWindow):
         )
 
         splitter.addWidget(self._build_devices_panel())
-        splitter.addWidget(self._build_apps_panel())
-        splitter.addWidget(self._build_log_panel())
-        splitter.setStretchFactor(0, 3)
+
+        # Tabbed lower panel for Apps, EQ, Waveform, Ducking, Groups, Diagnostics
+        self._lower_tabs = QTabWidget()
+        self._lower_tabs.setStyleSheet(
+            f"QTabWidget::pane {{ border: 1px solid {self._colours['border']}; "
+            f"border-radius: 4px; background: {self._colours['bg_deep']}; }}"
+            f"QTabBar::tab {{ background: {self._colours['bg_card']}; "
+            f"color: {self._colours['text_secondary']}; "
+            f"border: 1px solid {self._colours['border']}; "
+            f"padding: 4px 10px; margin-right: 2px; border-radius: 4px 4px 0 0; }}"
+            f"QTabBar::tab:selected {{ background: {self._colours['bg_deep']}; "
+            f"color: {self._colours['accent']}; border-bottom: none; }}"
+        )
+        self._lower_tabs.addTab(self._build_apps_panel(), "🎵 Apps")
+        self._lower_tabs.addTab(self._build_eq_panel(), "🎛 EQ")
+        self._lower_tabs.addTab(self._build_waveform_panel(), "〰 Waveform")
+        self._lower_tabs.addTab(self._build_ducking_panel(), "🔉 Ducking")
+        self._lower_tabs.addTab(self._build_groups_panel(), "📁 Groups")
+        self._lower_tabs.addTab(self._build_diagnostics_panel(), "📊 Health")
+        self._lower_tabs.addTab(self._build_log_panel(), "📋 Log")
+
+        splitter.addWidget(self._lower_tabs)
+        splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 0)
-        splitter.setSizes([400, 200, 100])
+        splitter.setSizes([400, 300])
 
         layout.addWidget(splitter)
         return panel
@@ -519,6 +649,259 @@ class MainWindow(QMainWindow):
         """Thread-safe log append."""
         QTimer.singleShot(0, lambda: self._log_text.appendPlainText(message))
 
+    # ── EQ panel ──────────────────────────────────────────────────────────────
+
+    def _build_eq_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        # Header row
+        header = QHBoxLayout()
+        self._chk_eq = QCheckBox("Enable Equalizer")
+        self._chk_eq.setToolTip("Apply 10-band equalizer to audio output")
+        header.addWidget(self._chk_eq)
+
+        header.addStretch()
+
+        self._cmb_eq_preset = QComboBox()
+        self._cmb_eq_preset.setToolTip("Load an EQ preset")
+        self._cmb_eq_preset.setMinimumWidth(120)
+        # Populate with presets from Equalizer module
+        try:
+            from equalizer import Equalizer
+            for name in Equalizer.PRESETS:
+                self._cmb_eq_preset.addItem(name)
+        except ImportError:
+            self._cmb_eq_preset.addItem("Flat")
+        header.addWidget(QLabel("Preset:"))
+        header.addWidget(self._cmb_eq_preset)
+
+        self._btn_eq_reset = QPushButton("Reset")
+        self._btn_eq_reset.setToolTip("Reset all EQ bands to 0 dB")
+        header.addWidget(self._btn_eq_reset)
+
+        layout.addLayout(header)
+
+        # EQ sliders
+        eq_row = QHBoxLayout()
+        eq_row.setSpacing(4)
+        self._eq_sliders: List[QSlider] = []
+        self._eq_labels: List[QLabel] = []
+
+        try:
+            from equalizer import Equalizer
+            bands = Equalizer.BANDS
+        except ImportError:
+            bands = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+
+        for freq in bands:
+            band_col = QVBoxLayout()
+            band_col.setSpacing(2)
+
+            gain_lbl = QLabel("0")
+            gain_lbl.setAlignment(Qt.AlignHCenter)
+            gain_lbl.setStyleSheet(f"color: {self._colours['accent']}; font-size: 10px;")
+            gain_lbl.setFixedWidth(30)
+            band_col.addWidget(gain_lbl)
+            self._eq_labels.append(gain_lbl)
+
+            slider = QSlider(Qt.Vertical)
+            slider.setRange(-120, 120)  # -12 to +12 dB × 10
+            slider.setValue(0)
+            slider.setFixedHeight(100)
+            slider.setToolTip(f"{freq} Hz")
+            band_col.addWidget(slider, alignment=Qt.AlignHCenter)
+            self._eq_sliders.append(slider)
+
+            freq_text = f"{freq // 1000}k" if freq >= 1000 else str(freq)
+            freq_lbl = QLabel(freq_text)
+            freq_lbl.setAlignment(Qt.AlignHCenter)
+            freq_lbl.setStyleSheet(f"color: {self._colours['text_secondary']}; font-size: 9px;")
+            band_col.addWidget(freq_lbl)
+
+            eq_row.addLayout(band_col)
+
+        layout.addLayout(eq_row)
+
+        # Status label
+        self._lbl_eq_status = QLabel("")
+        self._lbl_eq_status.setStyleSheet(f"color: {self._colours['text_secondary']}; font-size: 10px;")
+        layout.addWidget(self._lbl_eq_status)
+
+        try:
+            from equalizer import SCIPY_AVAILABLE
+            if not SCIPY_AVAILABLE:
+                self._lbl_eq_status.setText(
+                    "⚠ scipy not installed — EQ is in passthrough mode. "
+                    "Run: pip install scipy"
+                )
+        except ImportError:
+            self._lbl_eq_status.setText("⚠ equalizer module not available")
+
+        layout.addStretch()
+        return panel
+
+    # ── Waveform panel ────────────────────────────────────────────────────────
+
+    def _build_waveform_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        try:
+            from ui.waveform_widget import WaveformWidget
+            self._waveform_widget = WaveformWidget(
+                parent=panel,
+                display_seconds=5.0,
+                sample_rate=self._router.get_sample_rate(),
+            )
+            self._waveform_widget.setMinimumHeight(120)
+            layout.addWidget(self._waveform_widget)
+
+            # Connect to audio engine
+            self._router.set_waveform_callback(self._waveform_widget.push_samples)
+        except ImportError:
+            lbl = QLabel("⚠ Waveform widget not available")
+            lbl.setStyleSheet(f"color: {self._colours['warn']};")
+            layout.addWidget(lbl)
+
+        layout.addStretch()
+        return panel
+
+    # ── Ducking panel ─────────────────────────────────────────────────────────
+
+    def _build_ducking_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        desc = QLabel(
+            "Audio ducking automatically lowers the master volume when a "
+            "priority application (e.g., Discord, Teams) produces audio."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color: {self._colours['text_secondary']}; font-size: 11px;")
+        layout.addWidget(desc)
+
+        self._chk_ducking = QCheckBox("Enable Audio Ducking")
+        self._chk_ducking.setToolTip("Lower volume when a priority app is active")
+        layout.addWidget(self._chk_ducking)
+
+        app_row = QHBoxLayout()
+        app_lbl = QLabel("Priority App:")
+        app_lbl.setStyleSheet(f"color: {self._colours['text_secondary']};")
+        app_row.addWidget(app_lbl)
+        self._txt_ducking_app = QLineEdit()
+        self._txt_ducking_app.setPlaceholderText("e.g. Discord.exe, Teams.exe")
+        self._txt_ducking_app.setToolTip(
+            "Process name of the priority application.\n"
+            "When this app produces audio, other volume is reduced."
+        )
+        app_row.addWidget(self._txt_ducking_app)
+        layout.addLayout(app_row)
+
+        red_row = QHBoxLayout()
+        red_lbl = QLabel("Volume Reduction:")
+        red_lbl.setStyleSheet(f"color: {self._colours['text_secondary']};")
+        red_row.addWidget(red_lbl)
+        self._sld_ducking_reduction = QSlider(Qt.Horizontal)
+        self._sld_ducking_reduction.setRange(10, 90)
+        self._sld_ducking_reduction.setValue(30)
+        self._sld_ducking_reduction.setToolTip("How much to reduce volume (10%–90%)")
+        red_row.addWidget(self._sld_ducking_reduction)
+        self._lbl_ducking_pct = QLabel("30%")
+        self._lbl_ducking_pct.setStyleSheet(f"color: {self._colours['text_secondary']};")
+        red_row.addWidget(self._lbl_ducking_pct)
+        layout.addLayout(red_row)
+
+        self._lbl_ducking_status = QLabel("Ducking: Inactive")
+        self._lbl_ducking_status.setStyleSheet(f"color: {self._colours['text_secondary']};")
+        layout.addWidget(self._lbl_ducking_status)
+
+        layout.addStretch()
+        return panel
+
+    # ── Device Groups panel ───────────────────────────────────────────────────
+
+    def _build_groups_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        desc = QLabel(
+            "Create named device groups (zones) for quick switching.\n"
+            "Select a group to enable only those devices."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color: {self._colours['text_secondary']}; font-size: 11px;")
+        layout.addWidget(desc)
+
+        ctrl_row = QHBoxLayout()
+        self._cmb_groups = QComboBox()
+        self._cmb_groups.setMinimumWidth(150)
+        self._cmb_groups.addItem("— Select Group —")
+        ctrl_row.addWidget(self._cmb_groups)
+
+        self._btn_save_group = QPushButton("💾 Save Group")
+        self._btn_save_group.setToolTip("Save currently enabled devices as a named group")
+        ctrl_row.addWidget(self._btn_save_group)
+
+        self._btn_delete_group = QPushButton("🗑 Delete")
+        self._btn_delete_group.setToolTip("Delete the selected group")
+        ctrl_row.addWidget(self._btn_delete_group)
+
+        self._btn_apply_group = QPushButton("✅ Apply")
+        self._btn_apply_group.setToolTip("Enable only devices in the selected group")
+        ctrl_row.addWidget(self._btn_apply_group)
+
+        ctrl_row.addStretch()
+        layout.addLayout(ctrl_row)
+
+        self._lbl_group_info = QLabel("")
+        self._lbl_group_info.setStyleSheet(f"color: {self._colours['text_secondary']}; font-size: 11px;")
+        self._lbl_group_info.setWordWrap(True)
+        layout.addWidget(self._lbl_group_info)
+
+        layout.addStretch()
+
+        # Load saved groups
+        self._device_groups: Dict[str, List[str]] = self._settings.get_device_groups()
+        self._refresh_groups_combo()
+
+        return panel
+
+    # ── Diagnostics / Health panel ────────────────────────────────────────────
+
+    def _build_diagnostics_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        desc = QLabel("Real-time device health and performance diagnostics.")
+        desc.setStyleSheet(f"color: {self._colours['text_secondary']}; font-size: 11px;")
+        layout.addWidget(desc)
+
+        self._diag_text = QPlainTextEdit()
+        self._diag_text.setObjectName("log_panel")
+        self._diag_text.setReadOnly(True)
+        self._diag_text.setPlaceholderText("Start routing to see device diagnostics…")
+        layout.addWidget(self._diag_text)
+
+        btn_row = QHBoxLayout()
+        self._btn_diag_refresh = QPushButton("⟳ Refresh")
+        self._btn_diag_refresh.setToolTip("Refresh device diagnostics")
+        btn_row.addWidget(self._btn_diag_refresh)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        return panel
+
     # ── Status bar ────────────────────────────────────────────────────────────
 
     def _build_status_bar(self) -> None:
@@ -600,6 +983,10 @@ class MainWindow(QMainWindow):
 
     def _quit_app(self) -> None:
         self._save_settings()
+        if self._hotkey_mgr is not None:
+            self._hotkey_mgr.shutdown()
+        if self._mini_window is not None:
+            self._mini_window.close()
         self._tray_icon.hide()
         QApplication.quit()
 
@@ -662,6 +1049,8 @@ class MainWindow(QMainWindow):
         # Profiles
         self._btn_save_profile.clicked.connect(self._on_save_profile)
         self._btn_delete_profile.clicked.connect(self._on_delete_profile)
+        self._btn_export_profile.clicked.connect(self._on_export_profiles)
+        self._btn_import_profile.clicked.connect(self._on_import_profiles)
         self._cmb_profile.currentIndexChanged.connect(self._on_profile_selected)
 
         # Search / filter
@@ -673,6 +1062,46 @@ class MainWindow(QMainWindow):
         self._router.on_device_error = self._on_device_error
         self._router.on_device_recovered = self._on_device_recovered
         self._router.on_recording_changed = self._on_recording_state_changed
+        self._router.on_scheduled_recording_done = self._on_scheduled_recording_done
+
+        # Mini mode
+        self._btn_mini.clicked.connect(self._on_mini_mode)
+
+        # Limiter
+        self._chk_limiter.toggled.connect(self._on_limiter_toggled)
+        self._sld_limiter_thresh.valueChanged.connect(self._on_limiter_threshold_changed)
+
+        # Sample rate
+        self._cmb_sample_rate.currentIndexChanged.connect(self._on_sample_rate_changed)
+
+        # EQ
+        self._chk_eq.toggled.connect(self._on_eq_toggled)
+        self._cmb_eq_preset.currentTextChanged.connect(self._on_eq_preset_changed)
+        self._btn_eq_reset.clicked.connect(self._on_eq_reset)
+        for i, slider in enumerate(self._eq_sliders):
+            slider.valueChanged.connect(lambda val, idx=i: self._on_eq_band_changed(idx, val))
+
+        # Ducking
+        self._chk_ducking.toggled.connect(self._on_ducking_toggled)
+        self._sld_ducking_reduction.valueChanged.connect(
+            lambda v: self._lbl_ducking_pct.setText(f"{v}%")
+        )
+
+        # Device groups
+        self._btn_save_group.clicked.connect(self._on_save_group)
+        self._btn_delete_group.clicked.connect(self._on_delete_group)
+        self._btn_apply_group.clicked.connect(self._on_apply_group)
+
+        # Diagnostics
+        self._btn_diag_refresh.clicked.connect(self._refresh_diagnostics)
+
+        # Auto-start Windows
+        self._chk_auto_start_win.toggled.connect(self._on_auto_start_windows_toggled)
+
+        # Notification sounds
+        self._chk_notifications.toggled.connect(
+            lambda v: self._settings.save_notification_sounds(v)
+        )
 
     # ---------------------------------------------------------------- timers --
 
@@ -698,6 +1127,17 @@ class MainWindow(QMainWindow):
         self._reconnect_timer.setInterval(self.RECONNECT_MS)
         self._reconnect_timer.timeout.connect(self._attempt_reconnects)
         self._reconnect_timer.start()
+
+        # Ducking check timer
+        self._ducking_timer = QTimer(self)
+        self._ducking_timer.setInterval(500)  # Check every 500 ms
+        self._ducking_timer.timeout.connect(self._check_ducking)
+        self._ducking_timer.start()
+
+        # Diagnostics refresh timer
+        self._diag_timer = QTimer(self)
+        self._diag_timer.setInterval(2000)
+        self._diag_timer.timeout.connect(self._refresh_diagnostics)
 
     # ---------------------------------------------------------------- settings --
 
@@ -727,6 +1167,33 @@ class MainWindow(QMainWindow):
         self._settings.save_device_volumes(vol_map)
         self._settings.save_device_delays(delay_map)
         self._settings.save_auto_sync_delay(self._chk_auto_sync.isChecked())
+
+        # EQ settings
+        self._settings.save_eq_enabled(self._chk_eq.isChecked())
+        gains = [s.value() / 10.0 for s in self._eq_sliders]
+        self._settings.save_eq_gains(gains)
+        self._settings.save_eq_preset(self._cmb_eq_preset.currentText())
+
+        # Limiter settings
+        self._settings.save_limiter_enabled(self._chk_limiter.isChecked())
+        self._settings.save_limiter_threshold(self._sld_limiter_thresh.value() / 100.0)
+
+        # Sample rate
+        sr_values = [44100, 48000, 96000]
+        sr_idx = self._cmb_sample_rate.currentIndex()
+        if 0 <= sr_idx < len(sr_values):
+            self._settings.save_sample_rate(sr_values[sr_idx])
+
+        # Ducking
+        self._settings.save_ducking_enabled(self._chk_ducking.isChecked())
+        self._settings.save_ducking_app(self._txt_ducking_app.text())
+        self._settings.save_ducking_reduction(self._sld_ducking_reduction.value() / 100.0)
+
+        # Device groups
+        self._settings.save_device_groups(self._device_groups)
+
+        # Monitor config
+        self._settings.save_monitor_config(self._get_monitor_config_str())
 
     def _restore_settings(self) -> None:
         """Restore persisted state."""
@@ -773,6 +1240,51 @@ class MainWindow(QMainWindow):
         # Restore auto-sync delay setting
         self._chk_auto_sync.setChecked(self._settings.get_auto_sync_delay())
 
+        # Restore EQ settings
+        self._chk_eq.setChecked(self._settings.get_eq_enabled())
+        saved_gains = self._settings.get_eq_gains()
+        if saved_gains and len(saved_gains) == len(self._eq_sliders):
+            for i, gain in enumerate(saved_gains):
+                self._eq_sliders[i].setValue(int(gain * 10))
+        saved_preset = self._settings.get_eq_preset()
+        idx = self._cmb_eq_preset.findText(saved_preset)
+        if idx >= 0:
+            self._cmb_eq_preset.setCurrentIndex(idx)
+
+        # Restore limiter settings
+        self._chk_limiter.setChecked(self._settings.get_limiter_enabled())
+        thresh = self._settings.get_limiter_threshold()
+        self._sld_limiter_thresh.setValue(int(thresh * 100))
+
+        # Restore sample rate
+        sr = self._settings.get_sample_rate()
+        sr_map = {44100: 0, 48000: 1, 96000: 2}
+        if sr in sr_map:
+            self._cmb_sample_rate.setCurrentIndex(sr_map[sr])
+            self._router.set_sample_rate(sr)
+
+        # Restore ducking settings
+        self._chk_ducking.setChecked(self._settings.get_ducking_enabled())
+        self._txt_ducking_app.setText(self._settings.get_ducking_app())
+        reduction = self._settings.get_ducking_reduction()
+        self._sld_ducking_reduction.setValue(int(reduction * 100))
+
+        # Restore notification sounds
+        self._chk_notifications.setChecked(self._settings.get_notification_sounds())
+
+        # Restore auto-start Windows
+        try:
+            from autostart import is_auto_start_enabled
+            self._chk_auto_start_win.setChecked(is_auto_start_enabled())
+        except ImportError:
+            self._chk_auto_start_win.setEnabled(False)
+
+        # Restore monitor config for multi-monitor support
+        saved_config = self._settings.get_monitor_config()
+        current_config = self._get_monitor_config_str()
+        if saved_config and saved_config != current_config:
+            logger.info("Monitor configuration changed since last session")
+
         # Auto-start routing if enabled
         if self._settings.get_auto_start():
             QTimer.singleShot(500, self._on_start)
@@ -802,6 +1314,15 @@ class MainWindow(QMainWindow):
             "<li><b>Ctrl+S</b> — Save profile</li>"
             "<li><b>Ctrl+T</b> — Toggle dark / light theme</li>"
             "</ul>"
+            "<p><b>Global hotkeys</b> (work when minimised):</p>"
+            "<ul>"
+            "<li><b>Ctrl+Alt+R</b> — Toggle routing</li>"
+            "<li><b>Ctrl+Alt+M</b> — Toggle mute</li>"
+            "<li><b>Ctrl+Alt+↑/↓</b> — Volume up / down</li>"
+            "</ul>"
+            "<p><b>New features:</b> EQ, Waveform, Audio Ducking, Device Groups, "
+            "Mini Mode, Timed Recording, Diagnostics, Profile Import/Export, "
+            "and more — explore the tabs below!</p>"
             "<p>The app minimises to the system tray when you close the window.</p>",
         )
         self._settings.mark_first_run_done()
@@ -855,6 +1376,12 @@ class MainWindow(QMainWindow):
             card.deleteLater()
         self._device_cards.clear()
 
+        # Apply saved device order
+        saved_order = self._settings.get_device_order()
+        if saved_order:
+            order_map = {name: i for i, name in enumerate(saved_order)}
+            devices.sort(key=lambda d: order_map.get(d["name"], 9999))
+
         # Insert new cards (before the stretch)
         insert_idx = self._devices_layout.count() - 1
         for dev in devices:
@@ -863,6 +1390,7 @@ class MainWindow(QMainWindow):
             card.volume_changed.connect(self._on_device_volume_changed)
             card.mute_changed.connect(self._on_device_mute_changed)
             card.delay_changed.connect(self._on_device_delay_changed)
+            card.drop_received.connect(self._on_device_reordered)
 
             if dev["id"] in previously_enabled:
                 card.set_enabled(True)
@@ -1087,6 +1615,7 @@ class MainWindow(QMainWindow):
             QSystemTrayIcon.Warning,
             3000,
         )
+        self._play_notification("device_error")
 
     def _on_device_recovered(self, device_id: int) -> None:
         QTimer.singleShot(0, lambda: self._handle_device_recovered_ui(device_id))
@@ -1099,6 +1628,7 @@ class MainWindow(QMainWindow):
             QSystemTrayIcon.Information,
             2000,
         )
+        self._play_notification("device_recovered")
 
     def _attempt_reconnects(self) -> None:
         """Periodically try to reconnect failed devices."""
@@ -1170,7 +1700,12 @@ class MainWindow(QMainWindow):
             if source_id is not None:
                 self._router.set_source_device(source_id)
 
-        self._router.start_recording()
+        # Check for timed recording
+        duration_min = self._spn_rec_minutes.value()
+        if duration_min > 0:
+            self._router.start_scheduled_recording(duration_min * 60)
+        else:
+            self._router.start_recording()
 
     def _finish_recording(self) -> None:
         """Stop recording and prompt user for save location."""
@@ -1250,6 +1785,19 @@ class MainWindow(QMainWindow):
         # Tray menu sync
         self._tray_action_start.setEnabled(not active)
         self._tray_action_stop.setEnabled(active)
+
+        # Mini window sync
+        if self._mini_window is not None:
+            self._mini_window.set_routing_active(active)
+
+        # Notification sound
+        self._play_notification("routing_start" if active else "routing_stop")
+
+        # Start/stop diagnostics auto-refresh
+        if active:
+            self._diag_timer.start()
+        else:
+            self._diag_timer.stop()
 
         if active:
             self._lbl_status_dot.setStyleSheet(
@@ -1354,6 +1902,38 @@ class MainWindow(QMainWindow):
             strip = self._app_strips[pid]
             self._dev_mgr.set_session_mute(strip.session, muted)
 
+    # ── Device drag-and-drop reorder ─────────────────────────────────────────
+
+    @pyqtSlot(int, int)
+    def _on_device_reordered(self, source_id: int, target_id: int) -> None:
+        """Move source_id device card to the position of target_id."""
+        if source_id not in self._device_cards or target_id not in self._device_cards:
+            return
+
+        source_card = self._device_cards[source_id]
+        target_card = self._device_cards[target_id]
+
+        # Find positions in layout
+        source_idx = self._devices_layout.indexOf(source_card)
+        target_idx = self._devices_layout.indexOf(target_card)
+
+        if source_idx < 0 or target_idx < 0:
+            return
+
+        # Remove and re-insert at target position
+        self._devices_layout.removeWidget(source_card)
+        self._devices_layout.insertWidget(target_idx, source_card)
+
+        # Persist the new order
+        order = []
+        for i in range(self._devices_layout.count()):
+            widget = self._devices_layout.itemAt(i).widget()
+            if isinstance(widget, DeviceCard):
+                order.append(widget._device_name)
+        self._settings.save_device_order(order)
+
+        self.statusBar().showMessage("Device order updated.", 2000)
+
     # ── Convenience ──
 
     def _select_all_devices(self) -> None:
@@ -1371,6 +1951,10 @@ class MainWindow(QMainWindow):
         if self._router.is_routing:
             L, R = self._router.get_master_peak()
             self._master_vu.set_levels(L, R)
+
+            # Update mini window if open
+            if self._mini_window is not None:
+                self._mini_window.set_levels(L, R)
 
             for dev_id, card in self._device_cards.items():
                 if card.is_enabled():
@@ -1395,6 +1979,394 @@ class MainWindow(QMainWindow):
             self._sb_underruns.setText(
                 f"Underruns: {self._router.get_buffer_underruns()}"
             )
+
+    # ── Profile import / export ──────────────────────────────────────────────
+
+    def _on_export_profiles(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Profiles", "audio_profiles.json",
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if path:
+            if self._profile_mgr.export_to_file(path):
+                self.statusBar().showMessage(f"Profiles exported to {path}", 3000)
+            else:
+                self._show_error("Failed to export profiles.")
+
+    def _on_import_profiles(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Profiles", "",
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if path:
+            count = self._profile_mgr.import_from_file(path)
+            if count > 0:
+                self._refresh_profile_combo()
+                self.statusBar().showMessage(
+                    f"Imported {count} profile(s) from {path}", 3000
+                )
+            else:
+                self._show_error("No valid profiles found in the file.")
+
+    # ── Mini mode ────────────────────────────────────────────────────────────
+
+    def _on_mini_mode(self) -> None:
+        """Switch to the compact mini-mode window."""
+        try:
+            from ui.mini_window import MiniWindow
+        except ImportError:
+            self._show_error("Mini window module not available.")
+            return
+
+        if self._mini_window is None:
+            self._mini_window = MiniWindow()
+            self._mini_window.volume_changed.connect(self._sld_master.setValue)
+            self._mini_window.mute_toggled.connect(self._btn_mute_all.setChecked)
+            self._mini_window.routing_toggled.connect(self._toggle_routing)
+            self._mini_window.expand_requested.connect(self._expand_from_mini)
+
+        # Sync state to mini window
+        self._mini_window.set_volume(self._sld_master.value())
+        self._mini_window.set_muted(self._btn_mute_all.isChecked())
+        self._mini_window.set_routing_active(self._router.is_routing)
+
+        self.hide()
+        self._mini_window.show()
+
+    def _expand_from_mini(self) -> None:
+        """Return from mini mode to the full window."""
+        if self._mini_window is not None:
+            self._mini_window.hide()
+        self.showNormal()
+        self.activateWindow()
+        self.raise_()
+
+    # ── EQ handlers ──────────────────────────────────────────────────────────
+
+    def _on_eq_toggled(self, checked: bool) -> None:
+        self._router.set_eq_enabled(checked)
+        self._settings.save_eq_enabled(checked)
+
+    def _on_eq_band_changed(self, band_idx: int, value: int) -> None:
+        gain_db = value / 10.0
+        self._eq_labels[band_idx].setText(f"{gain_db:+.1f}")
+        eq = self._router.get_equalizer()
+        if eq is not None:
+            eq.set_gain(band_idx, gain_db)
+
+    def _on_eq_preset_changed(self, preset_name: str) -> None:
+        try:
+            from equalizer import Equalizer
+            if preset_name in Equalizer.PRESETS:
+                gains = Equalizer.PRESETS[preset_name]
+                eq = self._router.get_equalizer()
+                if eq is not None:
+                    eq.set_gains(gains)
+                for i, gain in enumerate(gains):
+                    if i < len(self._eq_sliders):
+                        self._eq_sliders[i].blockSignals(True)
+                        self._eq_sliders[i].setValue(int(gain * 10))
+                        self._eq_labels[i].setText(f"{gain:+.1f}")
+                        self._eq_sliders[i].blockSignals(False)
+                self._settings.save_eq_preset(preset_name)
+        except ImportError:
+            pass
+
+    def _on_eq_reset(self) -> None:
+        for i, slider in enumerate(self._eq_sliders):
+            slider.setValue(0)
+            self._eq_labels[i].setText("0")
+        eq = self._router.get_equalizer()
+        if eq is not None:
+            eq.set_gains([0.0] * len(self._eq_sliders))
+        idx = self._cmb_eq_preset.findText("Flat")
+        if idx >= 0:
+            self._cmb_eq_preset.blockSignals(True)
+            self._cmb_eq_preset.setCurrentIndex(idx)
+            self._cmb_eq_preset.blockSignals(False)
+
+    # ── Limiter handlers ─────────────────────────────────────────────────────
+
+    def _on_limiter_toggled(self, checked: bool) -> None:
+        self._router.set_limiter_enabled(checked)
+        self._settings.save_limiter_enabled(checked)
+
+    def _on_limiter_threshold_changed(self, value: int) -> None:
+        self._lbl_limiter_thresh.setText(f"{value}%")
+        self._router.set_limiter_threshold(value / 100.0)
+        self._settings.save_limiter_threshold(value / 100.0)
+
+    # ── Sample rate handler ──────────────────────────────────────────────────
+
+    def _on_sample_rate_changed(self, index: int) -> None:
+        sr_values = [44100, 48000, 96000]
+        if 0 <= index < len(sr_values):
+            self._router.set_sample_rate(sr_values[index])
+            self._settings.save_sample_rate(sr_values[index])
+            if self._router.is_routing:
+                self.statusBar().showMessage(
+                    "Sample rate changed — restart routing to apply.", 3000
+                )
+
+    # ── Ducking handlers ─────────────────────────────────────────────────────
+
+    def _on_ducking_toggled(self, checked: bool) -> None:
+        self._settings.save_ducking_enabled(checked)
+        if not checked and self._ducking_active:
+            self._restore_ducking_volume()
+
+    def _check_ducking(self) -> None:
+        """Periodically check if the priority app is producing audio."""
+        if not self._chk_ducking.isChecked():
+            return
+        if not self._dev_mgr.available:
+            return
+
+        target_app = self._txt_ducking_app.text().strip().lower()
+        if not target_app:
+            return
+
+        # Check if any audio session matches the target app and has peak > 0
+        sessions = self._dev_mgr.get_sessions()
+        app_active = False
+        for session in sessions:
+            if session.process_name.lower() == target_app:
+                peak = session.get_peak()
+                if peak > 0.01:
+                    app_active = True
+                    break
+
+        if app_active and not self._ducking_active:
+            # Start ducking
+            self._ducking_original_volume = self._sld_master.value()
+            reduction = self._sld_ducking_reduction.value() / 100.0
+            new_vol = max(0, int(self._ducking_original_volume * (1.0 - reduction)))
+            self._sld_master.setValue(new_vol)
+            self._ducking_active = True
+            self._lbl_ducking_status.setText(
+                f"Ducking: Active (reduced to {new_vol}%)"
+            )
+            self._lbl_ducking_status.setStyleSheet(
+                f"color: {self._colours.get('warn', '#f0a500')};"
+            )
+        elif not app_active and self._ducking_active:
+            self._restore_ducking_volume()
+
+    def _restore_ducking_volume(self) -> None:
+        """Restore volume after ducking ends."""
+        if self._ducking_original_volume is not None:
+            self._sld_master.setValue(self._ducking_original_volume)
+            self._ducking_original_volume = None
+        self._ducking_active = False
+        self._lbl_ducking_status.setText("Ducking: Inactive")
+        self._lbl_ducking_status.setStyleSheet(
+            f"color: {self._colours['text_secondary']};"
+        )
+
+    # ── Device groups handlers ───────────────────────────────────────────────
+
+    def _refresh_groups_combo(self) -> None:
+        self._cmb_groups.blockSignals(True)
+        self._cmb_groups.clear()
+        self._cmb_groups.addItem("— Select Group —")
+        for name in sorted(self._device_groups.keys()):
+            self._cmb_groups.addItem(name)
+        self._cmb_groups.blockSignals(False)
+
+    def _on_save_group(self) -> None:
+        name, ok = QInputDialog.getText(
+            self, "Save Device Group", "Group name:"
+        )
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+
+        enabled_names = [
+            card._device_name
+            for card in self._device_cards.values()
+            if card.is_enabled()
+        ]
+        if not enabled_names:
+            QMessageBox.information(
+                self, "No Devices",
+                "Enable at least one device before saving a group."
+            )
+            return
+
+        self._device_groups[name] = enabled_names
+        self._settings.save_device_groups(self._device_groups)
+        self._refresh_groups_combo()
+        self.statusBar().showMessage(f"Group '{name}' saved ({len(enabled_names)} devices).", 3000)
+
+    def _on_delete_group(self) -> None:
+        idx = self._cmb_groups.currentIndex()
+        if idx <= 0:
+            return
+        name = self._cmb_groups.currentText()
+        reply = QMessageBox.question(
+            self, "Delete Group", f"Delete group '{name}'?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            self._device_groups.pop(name, None)
+            self._settings.save_device_groups(self._device_groups)
+            self._refresh_groups_combo()
+
+    def _on_apply_group(self) -> None:
+        idx = self._cmb_groups.currentIndex()
+        if idx <= 0:
+            return
+        name = self._cmb_groups.currentText()
+        device_names = self._device_groups.get(name, [])
+        if not device_names:
+            return
+
+        for card in self._device_cards.values():
+            card.set_enabled(card._device_name in device_names)
+
+        self._lbl_group_info.setText(
+            f"Applied group '{name}': {', '.join(device_names)}"
+        )
+        self.statusBar().showMessage(f"Group '{name}' applied.", 3000)
+
+    # ── Diagnostics / Health ─────────────────────────────────────────────────
+
+    def _refresh_diagnostics(self) -> None:
+        """Update the device health / diagnostics panel."""
+        lines = []
+        lines.append("═══ DEVICE HEALTH REPORT ═══")
+        lines.append(f"  Routing: {'Active' if self._router.is_routing else 'Inactive'}")
+        lines.append(f"  Sample Rate: {self._router.get_sample_rate()} Hz")
+        lines.append(f"  Block Size: {self._router.BLOCK_SIZE} samples")
+        lines.append(f"  Latency: {self._router.get_latency_ms():.1f} ms")
+        lines.append(f"  Avg CB Duration: {self._router.get_avg_cb_duration_ms():.3f} ms")
+        lines.append(f"  Buffer Underruns: {self._router.get_buffer_underruns()}")
+        lines.append(f"  EQ: {'Enabled' if self._router.is_eq_enabled() else 'Disabled'}")
+        lines.append(f"  Limiter: {'Enabled' if self._router.is_limiter_enabled() else 'Disabled'}")
+        lines.append("")
+
+        devices = self._router.get_output_devices()
+        errors = self._router.get_device_errors()
+        failed = self._router.failed_device_ids
+
+        for dev in devices:
+            dev_id = dev["id"]
+            status = "✅ OK"
+            if dev_id in failed:
+                status = "❌ FAILED"
+            elif dev_id in errors:
+                status = f"⚠ ERROR: {errors[dev_id]}"
+            elif dev_id in self._router.active_device_ids:
+                status = "🟢 ACTIVE"
+
+            lines.append(f"  [{dev_id}] {dev['name']}")
+            lines.append(f"      API: {dev['hostapi']}  |  Channels: {dev['channels']}")
+            lines.append(f"      Default SR: {dev['default_samplerate']} Hz")
+            lines.append(f"      Latency: {dev['default_latency_ms']:.1f} ms")
+            lines.append(f"      Status: {status}")
+            lines.append("")
+
+        self._diag_text.setPlainText("\n".join(lines))
+
+    # ── Scheduled recording ──────────────────────────────────────────────────
+
+    def _on_scheduled_recording_done(self) -> None:
+        """Called from the audio engine when timed recording finishes."""
+        QTimer.singleShot(0, self._finish_recording)
+        self._play_notification("recording_done")
+
+    # ── Notification sounds ──────────────────────────────────────────────────
+
+    def _play_notification(self, event_name: str) -> None:
+        """Play a system notification sound if enabled."""
+        if not self._chk_notifications.isChecked():
+            return
+        if sys.platform != "win32":
+            return
+        try:
+            import winsound
+            sound_map = {
+                "routing_start": winsound.MB_OK,
+                "routing_stop": winsound.MB_ICONASTERISK,
+                "recording_done": winsound.MB_ICONEXCLAMATION,
+                "device_error": winsound.MB_ICONHAND,
+                "device_recovered": winsound.MB_OK,
+            }
+            sound = sound_map.get(event_name, winsound.MB_OK)
+            winsound.MessageBeep(sound)
+        except Exception:
+            pass
+
+    # ── Auto-start with Windows ──────────────────────────────────────────────
+
+    def _on_auto_start_windows_toggled(self, checked: bool) -> None:
+        try:
+            from autostart import set_auto_start
+            success = set_auto_start(checked)
+            if success:
+                self._settings.save_auto_start_windows(checked)
+                self.statusBar().showMessage(
+                    f"Auto-start {'enabled' if checked else 'disabled'}.", 3000
+                )
+            else:
+                self._chk_auto_start_win.blockSignals(True)
+                self._chk_auto_start_win.setChecked(not checked)
+                self._chk_auto_start_win.blockSignals(False)
+                self._show_error("Failed to modify Windows startup settings.")
+        except ImportError:
+            self._show_error("Auto-start module not available on this platform.")
+
+    # ── Multi-monitor support ────────────────────────────────────────────────
+
+    def _get_monitor_config_str(self) -> str:
+        """Build a string representing the current monitor layout."""
+        try:
+            screens = QApplication.screens()
+            parts = []
+            for s in screens:
+                g = s.geometry()
+                parts.append(f"{s.name()}:{g.width()}x{g.height()}@{g.x()},{g.y()}")
+            return "|".join(sorted(parts))
+        except Exception:
+            return ""
+
+    # ── Global hotkeys ───────────────────────────────────────────────────────
+
+    def _setup_hotkeys(self) -> None:
+        """Register system-wide hotkeys."""
+        if not self._settings.get_hotkeys_enabled():
+            return
+        try:
+            from hotkey_manager import HotkeyManager, DEFAULT_HOTKEYS
+        except ImportError:
+            logger.info("Global hotkeys not available (Windows only)")
+            return
+
+        self._hotkey_mgr = HotkeyManager()
+        if not self._hotkey_mgr.available:
+            return
+
+        for name, (modifiers, vk) in DEFAULT_HOTKEYS.items():
+            callback = self._get_hotkey_callback(name)
+            if callback:
+                self._hotkey_mgr.register(name, modifiers, vk, callback)
+
+        logger.info("Global hotkeys registered")
+
+    def _get_hotkey_callback(self, name: str):
+        """Return a callback function for a named hotkey action."""
+        callbacks = {
+            "toggle_routing": lambda: QTimer.singleShot(0, self._toggle_routing),
+            "toggle_mute": lambda: QTimer.singleShot(0, self._btn_mute_all.toggle),
+            "volume_up": lambda: QTimer.singleShot(
+                0, lambda: self._sld_master.setValue(min(100, self._sld_master.value() + 5))
+            ),
+            "volume_down": lambda: QTimer.singleShot(
+                0, lambda: self._sld_master.setValue(max(0, self._sld_master.value() - 5))
+            ),
+            "toggle_recording": lambda: QTimer.singleShot(0, self._on_record_toggle),
+        }
+        return callbacks.get(name)
 
     # ---------------------------------------------------------------- helpers --
 
@@ -1425,8 +2397,16 @@ class MainWindow(QMainWindow):
             self._app_timer.stop()
             self._device_poll_timer.stop()
             self._reconnect_timer.stop()
+            self._ducking_timer.stop()
+            self._diag_timer.stop()
             self._router.stop_routing()
             self._dev_mgr.shutdown()
+            # Clean up hotkeys
+            if self._hotkey_mgr is not None:
+                self._hotkey_mgr.shutdown()
+            # Close mini window
+            if self._mini_window is not None:
+                self._mini_window.close()
             self._tray_icon.hide()
             # Remove our log handler to prevent errors during shutdown
             logging.getLogger().removeHandler(self._log_handler)

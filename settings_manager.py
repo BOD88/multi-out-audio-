@@ -37,6 +37,21 @@ _K_PROFILES = "profiles/data"
 _K_DEVICE_DELAYS = "audio/device_delays"
 _K_DEVICE_ORDER = "ui/device_order"
 _K_AUTO_SYNC_DELAY = "audio/auto_sync_delay"
+_K_SAMPLE_RATE = "audio/sample_rate"
+_K_EQ_ENABLED = "audio/eq_enabled"
+_K_EQ_GAINS = "audio/eq_gains"
+_K_EQ_PRESET = "audio/eq_preset"
+_K_LIMITER_ENABLED = "audio/limiter_enabled"
+_K_LIMITER_THRESHOLD = "audio/limiter_threshold"
+_K_HOTKEYS_ENABLED = "audio/hotkeys_enabled"
+_K_HOTKEY_BINDINGS = "audio/hotkey_bindings"
+_K_DUCKING_ENABLED = "audio/ducking_enabled"
+_K_DUCKING_APP = "audio/ducking_app"
+_K_DUCKING_REDUCTION = "audio/ducking_reduction"
+_K_DEVICE_GROUPS = "ui/device_groups"
+_K_NOTIFICATION_SOUNDS = "ui/notification_sounds"
+_K_AUTO_START_WINDOWS = "ui/auto_start_windows"
+_K_MONITOR_CONFIG = "ui/monitor_config"
 
 
 class SettingsManager:
@@ -210,3 +225,153 @@ class SettingsManager:
         if isinstance(val, str):
             return val.lower() == "true"
         return bool(val)
+
+    # ── sample rate ──
+
+    def save_sample_rate(self, rate: int) -> None:
+        self._set(_K_SAMPLE_RATE, rate)
+
+    def get_sample_rate(self) -> int:
+        val = self._get(_K_SAMPLE_RATE, 48000)
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return 48000
+
+    # ── equalizer ──
+
+    def save_eq_enabled(self, enabled: bool) -> None:
+        self._set(_K_EQ_ENABLED, enabled)
+
+    def get_eq_enabled(self) -> bool:
+        val = self._get(_K_EQ_ENABLED, False)
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val)
+
+    def save_eq_gains(self, gains: List[float]) -> None:
+        self._set(_K_EQ_GAINS, json.dumps(gains))
+
+    def get_eq_gains(self) -> List[float]:
+        raw = self._get(_K_EQ_GAINS, "[]")
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def save_eq_preset(self, preset: str) -> None:
+        self._set(_K_EQ_PRESET, preset)
+
+    def get_eq_preset(self) -> str:
+        return self._get(_K_EQ_PRESET, "Flat") or "Flat"
+
+    # ── limiter ──
+
+    def save_limiter_enabled(self, enabled: bool) -> None:
+        self._set(_K_LIMITER_ENABLED, enabled)
+
+    def get_limiter_enabled(self) -> bool:
+        val = self._get(_K_LIMITER_ENABLED, False)
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val)
+
+    def save_limiter_threshold(self, threshold: float) -> None:
+        self._set(_K_LIMITER_THRESHOLD, threshold)
+
+    def get_limiter_threshold(self) -> float:
+        val = self._get(_K_LIMITER_THRESHOLD, 0.95)
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return 0.95
+
+    # ── global hotkeys ──
+
+    def save_hotkeys_enabled(self, enabled: bool) -> None:
+        self._set(_K_HOTKEYS_ENABLED, enabled)
+
+    def get_hotkeys_enabled(self) -> bool:
+        val = self._get(_K_HOTKEYS_ENABLED, True)
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val)
+
+    def save_hotkey_bindings(self, bindings: Dict[str, Any]) -> None:
+        self._set(_K_HOTKEY_BINDINGS, json.dumps(bindings))
+
+    def get_hotkey_bindings(self) -> Dict[str, Any]:
+        raw = self._get(_K_HOTKEY_BINDINGS, "{}")
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    # ── audio ducking ──
+
+    def save_ducking_enabled(self, enabled: bool) -> None:
+        self._set(_K_DUCKING_ENABLED, enabled)
+
+    def get_ducking_enabled(self) -> bool:
+        val = self._get(_K_DUCKING_ENABLED, False)
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val)
+
+    def save_ducking_app(self, app_name: str) -> None:
+        self._set(_K_DUCKING_APP, app_name)
+
+    def get_ducking_app(self) -> str:
+        return self._get(_K_DUCKING_APP, "") or ""
+
+    def save_ducking_reduction(self, reduction: float) -> None:
+        self._set(_K_DUCKING_REDUCTION, reduction)
+
+    def get_ducking_reduction(self) -> float:
+        val = self._get(_K_DUCKING_REDUCTION, 0.3)
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return 0.3
+
+    # ── device groups ──
+
+    def save_device_groups(self, groups: Dict[str, List[str]]) -> None:
+        self._set(_K_DEVICE_GROUPS, json.dumps(groups))
+
+    def get_device_groups(self) -> Dict[str, List[str]]:
+        raw = self._get(_K_DEVICE_GROUPS, "{}")
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    # ── notification sounds ──
+
+    def save_notification_sounds(self, enabled: bool) -> None:
+        self._set(_K_NOTIFICATION_SOUNDS, enabled)
+
+    def get_notification_sounds(self) -> bool:
+        val = self._get(_K_NOTIFICATION_SOUNDS, True)
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val)
+
+    # ── auto-start with Windows ──
+
+    def save_auto_start_windows(self, enabled: bool) -> None:
+        self._set(_K_AUTO_START_WINDOWS, enabled)
+
+    def get_auto_start_windows(self) -> bool:
+        val = self._get(_K_AUTO_START_WINDOWS, False)
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val)
+
+    # ── monitor configuration ──
+
+    def save_monitor_config(self, config: str) -> None:
+        self._set(_K_MONITOR_CONFIG, config)
+
+    def get_monitor_config(self) -> str:
+        return self._get(_K_MONITOR_CONFIG, "") or ""
