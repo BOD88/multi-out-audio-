@@ -10,12 +10,17 @@ and automatic error recovery.
 """
 
 import collections
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 import logging
 import time
 import numpy as np
 import sounddevice as sd
+import soundfile as sf
 from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -78,11 +83,18 @@ class AudioRouter:
         self._failed_devices: Dict[int, int] = {}  # device_id → retry count
         self._device_errors: Dict[int, str] = {}   # device_id → last error message
 
+        # Recording state
+        self._is_recording: bool = False
+        self._recording_file: Optional[sf.SoundFile] = None
+        self._recording_wav_path: Optional[str] = None
+        self._recording_lock = threading.Lock()
+
         # Optional callbacks for UI notifications
         self.on_routing_changed: Optional[Callable[[bool], None]] = None
         self.on_error: Optional[Callable[[str], None]] = None
         self.on_device_error: Optional[Callable[[int, str], None]] = None
         self.on_device_recovered: Optional[Callable[[int], None]] = None
+        self.on_recording_changed: Optional[Callable[[bool], None]] = None
 
         # Latency display
         self._latency_ms: float = 0.0
@@ -284,6 +296,14 @@ class AudioRouter:
 
             # Store in delay ring buffer for delay compensation
             self._delay_buffer.append(block.copy())
+
+            # Write to recording file if active
+            with self._recording_lock:
+                if self._is_recording and self._recording_file is not None:
+                    try:
+                        self._recording_file.write(block)
+                    except Exception as exc:
+                        logger.error("Recording write error: %s", exc)
 
             # Peak metering (master)
             if not self._master_muted:
@@ -497,7 +517,8 @@ class AudioRouter:
         """Stop all loopback capture and output streams."""
         self._is_routing = False
 
-        if self._input_stream:
+        # Keep the input stream alive if recording is still active
+        if self._input_stream and not self._is_recording:
             try:
                 self._input_stream.stop()
                 self._input_stream.close()
@@ -605,3 +626,219 @@ class AudioRouter:
     def failed_device_ids(self) -> List[int]:
         """Return IDs of devices that have failed and may need reconnection."""
         return list(self._failed_devices.keys())
+
+    @property
+    def is_recording(self) -> bool:
+        return self._is_recording
+
+    # ------------------------------------------------------------ recording --
+
+    @staticmethod
+    def _find_ffmpeg() -> Optional[str]:
+        """Return path to ffmpeg if available, else None."""
+        path = shutil.which("ffmpeg")
+        if path:
+            return path
+        # Check common Windows install locations
+        if sys.platform == "win32":
+            for candidate in (
+                os.path.join(os.environ.get("ProgramFiles", ""), "ffmpeg", "bin", "ffmpeg.exe"),
+                os.path.join(os.environ.get("LOCALAPPDATA", ""), "ffmpeg", "bin", "ffmpeg.exe"),
+            ):
+                if os.path.isfile(candidate):
+                    return candidate
+        return None
+
+    def start_recording(self) -> None:
+        """
+        Begin recording captured audio to a temporary WAV file.
+
+        Recording taps into the same WASAPI loopback data used for routing.
+        The loopback capture stream must already be running (i.e. routing is active)
+        or a standalone capture stream will be started.
+        """
+        if self._is_recording:
+            return
+
+        # Create a temp WAV file to write raw audio into
+        fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="moac_rec_")
+        os.close(fd)
+
+        try:
+            self._recording_file = sf.SoundFile(
+                wav_path,
+                mode="w",
+                samplerate=self.SAMPLE_RATE,
+                channels=self.CHANNELS,
+                format="WAV",
+                subtype="FLOAT",
+            )
+        except Exception as exc:
+            logger.error("Cannot open recording file: %s", exc)
+            if self.on_error:
+                self.on_error(f"Cannot start recording: {exc}")
+            return
+
+        self._recording_wav_path = wav_path
+
+        # If routing is not active, start a standalone loopback capture
+        if not self._is_routing:
+            try:
+                source_id = self._source_device_id or self.get_default_output_device_id()
+                if sys.platform == "win32":
+                    extra = sd.WasapiSettings(loopback=True)
+                    dev_info = sd.query_devices(source_id)
+                    sr = int(dev_info.get("default_samplerate", self.SAMPLE_RATE))
+                    sr = sr if sr in (44_100, 48_000, 96_000) else self.SAMPLE_RATE
+                    self._input_stream = sd.InputStream(
+                        device=source_id,
+                        channels=self.CHANNELS,
+                        samplerate=sr,
+                        callback=self._input_callback,
+                        blocksize=self.BLOCK_SIZE,
+                        dtype=self.DTYPE,
+                        extra_settings=extra,
+                    )
+                else:
+                    stereo_mix = self.find_stereo_mix_device()
+                    self._input_stream = sd.InputStream(
+                        device=stereo_mix,
+                        channels=self.CHANNELS,
+                        samplerate=self.SAMPLE_RATE,
+                        callback=self._input_callback,
+                        blocksize=self.BLOCK_SIZE,
+                        dtype=self.DTYPE,
+                    )
+                self._input_stream.start()
+                logger.info("Started standalone loopback capture for recording")
+            except Exception as exc:
+                self._recording_file.close()
+                self._recording_file = None
+                os.remove(wav_path)
+                self._recording_wav_path = None
+                msg = f"Cannot start loopback capture for recording: {exc}"
+                logger.error(msg)
+                if self.on_error:
+                    self.on_error(msg)
+                return
+
+        with self._recording_lock:
+            self._is_recording = True
+
+        logger.info("Recording started → %s", wav_path)
+        if self.on_recording_changed:
+            self.on_recording_changed(True)
+
+    def stop_recording(self, output_path: str) -> Optional[str]:
+        """
+        Stop recording and save the result as an M4A file.
+
+        Parameters
+        ----------
+        output_path : str
+            Destination path for the M4A file (e.g. ``/Users/me/Desktop/rec.m4a``).
+
+        Returns
+        -------
+        str or None
+            The final output file path on success, or None on failure.
+        """
+        if not self._is_recording:
+            return None
+
+        with self._recording_lock:
+            self._is_recording = False
+
+        # Close the WAV writer
+        wav_path = self._recording_wav_path
+        if self._recording_file is not None:
+            try:
+                self._recording_file.close()
+            except Exception as exc:
+                logger.error("Error closing recording file: %s", exc)
+            self._recording_file = None
+        self._recording_wav_path = None
+
+        # If we started a standalone capture (no routing), stop it
+        if not self._is_routing and self._input_stream is not None:
+            try:
+                self._input_stream.stop()
+                self._input_stream.close()
+            except Exception as exc:
+                logger.error("Error closing standalone capture stream: %s", exc)
+            self._input_stream = None
+
+        if self.on_recording_changed:
+            self.on_recording_changed(False)
+
+        if wav_path is None or not os.path.isfile(wav_path):
+            logger.error("Recording WAV file not found")
+            return None
+
+        # Ensure output path ends with .m4a
+        if not output_path.lower().endswith(".m4a"):
+            output_path += ".m4a"
+
+        # Convert WAV → M4A using ffmpeg
+        ffmpeg = self._find_ffmpeg()
+        if ffmpeg is None:
+            # Fallback: save as WAV if ffmpeg not available
+            fallback = output_path.rsplit(".", 1)[0] + ".wav"
+            try:
+                shutil.move(wav_path, fallback)
+                logger.warning(
+                    "ffmpeg not found — saved recording as WAV instead: %s", fallback
+                )
+                if self.on_error:
+                    self.on_error(
+                        "ffmpeg is not installed. Recording saved as WAV instead.\n\n"
+                        "To save as M4A, install ffmpeg and add it to your PATH."
+                    )
+                return fallback
+            except Exception as exc:
+                logger.error("Failed to move WAV file: %s", exc)
+                return None
+
+        try:
+            cmd = [
+                ffmpeg, "-y",
+                "-i", wav_path,
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-movflags", "+faststart",
+                output_path,
+            ]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr or f"ffmpeg exited with code {result.returncode}")
+
+            logger.info("Recording saved: %s", output_path)
+            return output_path
+
+        except Exception as exc:
+            logger.error("ffmpeg conversion failed: %s", exc)
+            # Fallback: keep the WAV
+            fallback = output_path.rsplit(".", 1)[0] + ".wav"
+            try:
+                shutil.move(wav_path, fallback)
+                if self.on_error:
+                    self.on_error(
+                        f"M4A conversion failed ({exc}).\n"
+                        f"Recording saved as WAV instead:\n{fallback}"
+                    )
+                return fallback
+            except Exception:
+                return None
+        finally:
+            # Clean up temp WAV file
+            try:
+                if os.path.isfile(wav_path):
+                    os.remove(wav_path)
+            except Exception:
+                pass

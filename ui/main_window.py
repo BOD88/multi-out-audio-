@@ -27,6 +27,7 @@ Layout
 import logging
 import os
 import sys
+import tempfile
 from typing import Dict, List, Optional
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot
@@ -36,6 +37,7 @@ from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -198,6 +200,14 @@ class MainWindow(QMainWindow):
         self._btn_stop.setEnabled(False)
         self._btn_stop.setToolTip("Stop all audio routing\nShortcut: Ctrl+R")
         tb.addWidget(self._btn_stop)
+
+        self._btn_record = QPushButton("⏺  RECORD")
+        self._btn_record.setObjectName("btn_record")
+        self._btn_record.setToolTip(
+            "Record all sound card audio to an M4A file\n"
+            "Requires ffmpeg installed for M4A encoding (falls back to WAV)"
+        )
+        tb.addWidget(self._btn_record)
 
         tb.addSeparator()
 
@@ -635,6 +645,7 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self._btn_start.clicked.connect(self._on_start)
         self._btn_stop.clicked.connect(self._on_stop)
+        self._btn_record.clicked.connect(self._on_record_toggle)
         self._btn_mute_all.toggled.connect(self._on_mute_all_toggled)
         self._sld_master.valueChanged.connect(self._on_master_volume_changed)
         self._btn_refresh_devices.clicked.connect(self._populate_devices)
@@ -661,6 +672,7 @@ class MainWindow(QMainWindow):
         self._router.on_error = self._show_error
         self._router.on_device_error = self._on_device_error
         self._router.on_device_recovered = self._on_device_recovered
+        self._router.on_recording_changed = self._on_recording_state_changed
 
     # ---------------------------------------------------------------- timers --
 
@@ -1135,7 +1147,94 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot()
     def _on_stop(self) -> None:
+        # Stop any active recording first
+        if self._router.is_recording:
+            self._finish_recording()
         self._router.stop_routing()
+
+    # ── Recording ────────────────────────────────────────────────────────────
+
+    @pyqtSlot()
+    def _on_record_toggle(self) -> None:
+        """Toggle recording on/off."""
+        if self._router.is_recording:
+            self._finish_recording()
+        else:
+            self._start_recording()
+
+    def _start_recording(self) -> None:
+        """Start recording system audio."""
+        # If not routing, we need a source device for standalone capture
+        if not self._router.is_routing:
+            source_id = self._cmb_source.currentData()
+            if source_id is not None:
+                self._router._source_device_id = source_id
+
+        self._router.start_recording()
+
+    def _finish_recording(self) -> None:
+        """Stop recording and prompt user for save location."""
+        if not self._router.is_recording:
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Recording",
+            "recording.m4a",
+            "M4A Audio (*.m4a);;All Files (*)",
+        )
+
+        if not path:
+            # User cancelled — still stop recording but discard
+            self._router.stop_recording(os.path.join(tempfile.gettempdir(), "_discard.m4a"))
+            logger.info("Recording discarded (user cancelled save)")
+            return
+
+        # Run conversion in a thread to avoid blocking the UI
+        import threading as _threading
+
+        def _save():
+            result = self._router.stop_recording(path)
+            if result:
+                QTimer.singleShot(0, lambda: self.statusBar().showMessage(
+                    f"Recording saved: {result}", 5000
+                ))
+            else:
+                QTimer.singleShot(0, lambda: self._show_error(
+                    "Failed to save recording. Check the log for details."
+                ))
+
+        _threading.Thread(target=_save, daemon=True, name="RecordSave").start()
+
+    def _on_recording_state_changed(self, active: bool) -> None:
+        """Called from the audio engine (possibly non-GUI thread)."""
+        QTimer.singleShot(0, lambda: self._apply_recording_state(active))
+
+    def _apply_recording_state(self, active: bool) -> None:
+        if active:
+            self._btn_record.setText("⏹  STOP REC")
+            self._btn_record.setStyleSheet(
+                f"QPushButton {{ background: {self._colours.get('danger', '#e74c3c')}; "
+                f"color: white; font-weight: bold; }}"
+            )
+            self.statusBar().showMessage("⏺ Recording…")
+            self._recording_elapsed = 0
+            self._recording_timer = QTimer(self)
+            self._recording_timer.setInterval(1000)
+            self._recording_timer.timeout.connect(self._update_recording_time)
+            self._recording_timer.start()
+        else:
+            self._btn_record.setText("⏺  RECORD")
+            self._btn_record.setStyleSheet("")
+            if hasattr(self, "_recording_timer"):
+                self._recording_timer.stop()
+
+    def _update_recording_time(self) -> None:
+        if not self._router.is_recording:
+            return
+        self._recording_elapsed += 1
+        mins, secs = divmod(self._recording_elapsed, 60)
+        self.statusBar().showMessage(f"⏺ Recording… {mins:02d}:{secs:02d}")
 
     @pyqtSlot(bool)
     def _on_routing_state_changed(self, active: bool) -> None:
