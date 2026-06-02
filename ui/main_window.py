@@ -208,7 +208,7 @@ class MainWindow(QMainWindow):
         db_lay = QVBoxLayout(db_frame)
         db_lay.setContentsMargins(0, 0, 0, 0)
         db_lay.setSpacing(0)
-        for label_text in ("0 dB", "-6", "-12", "-24", "–∞"):
+        for label_text in ("0 dB", "-6 dB", "-12 dB", "-24 dB", "-∞ dB"):
             lbl = QLabel(label_text)
             lbl.setStyleSheet(
                 f"color: {COLOURS['text_secondary']}; font-size: 9px;"
@@ -544,7 +544,7 @@ class MainWindow(QMainWindow):
                 f"color: {COLOURS['success']}; font-size: 14px;"
             )
             n = self._router.active_output_count
-            self._lbl_status.setText(f"Routing active  ({n} output{'s' if n != 1 else ''})")
+            self._lbl_status.setText(f"Routing active ({n} output{'s' if n != 1 else ''})")
             self._lbl_status.setObjectName("lbl_status_active")
         else:
             self._lbl_status_dot.setStyleSheet(

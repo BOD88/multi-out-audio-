@@ -144,10 +144,9 @@ class VUMeter(QWidget):
             nonlocal remaining, current_y
             if remaining <= 0:
                 return
-            overlap = min(remaining, (current_y) - max(zone_top, current_y - remaining))
-            if overlap <= 0:
-                return
             drawn = min(remaining, max(0, current_y - zone_top))
+            if drawn <= 0:
+                return
             draw_y = current_y - drawn
             p.fillRect(x, draw_y, w, drawn, colour)
             remaining -= drawn

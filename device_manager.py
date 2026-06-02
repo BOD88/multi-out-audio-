@@ -14,6 +14,7 @@ Qt thread invokes the public methods.
 """
 
 import logging
+import queue
 import sys
 import threading
 from typing import Dict, List, Optional
@@ -108,7 +109,7 @@ class DeviceManager:
         self._lock = threading.Lock()
         self._sessions: List[AudioSession] = []
         self._com_thread: Optional[threading.Thread] = None
-        self._com_queue: "queue.Queue" = __import__("queue").Queue()
+        self._com_queue: queue.Queue = queue.Queue()
         self._shutdown = threading.Event()
 
         if PYCAW_AVAILABLE:
@@ -141,7 +142,7 @@ class DeviceManager:
                         result_holder["error"] = exc
                     finally:
                         result_event.set()
-                except __import__("queue").Empty:
+                except queue.Empty:
                     continue
         finally:
             try:
