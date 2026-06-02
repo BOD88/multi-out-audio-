@@ -27,16 +27,31 @@ control per device.
 | **Source selector** | Choose which audio device acts as the capture source (loopback) |
 | **Low latency** | WASAPI loopback capture with ~21 ms latency at 48 kHz / 1024 block |
 | **Audio profiles** | Save and load named presets (e.g., "Movie Night", "Work", "Party") with one click |
+| **Profile import/export** | Share profiles between PCs via JSON file export and import |
 | **Persistent settings** | Window size, device selections, volumes, and preferences are remembered across sessions |
 | **System tray** | Minimise to tray with Start/Stop/Mute controls in the right-click menu |
 | **Dark / Light theme** | Toggle between dark and light themes (Ctrl+T) |
 | **Device search** | Filter the device list by name or API type |
 | **Keyboard shortcuts** | Ctrl+R (Start/Stop), Ctrl+M (Mute All), Ctrl+↑/↓ (volume), Ctrl+S (save profile) |
+| **Global hotkeys** | System-wide hotkeys work even when the app is minimised (Ctrl+Alt+R/M/↑/↓) |
 | **Auto-start** | Option to automatically begin routing on launch with the last-used configuration |
+| **Auto-start with Windows** | Optional Windows startup entry to launch the app at login |
 | **Device notifications** | Automatic detection when devices connect or disconnect |
+| **Notification sounds** | Audible feedback for routing start/stop, errors, and recording events |
 | **Error recovery** | Graceful handling of device failures with automatic reconnection attempts |
 | **Diagnostics log** | Built-in log panel showing real-time engine events and errors |
 | **CPU monitoring** | Status bar shows callback duration and buffer underrun count |
+| **10-band equalizer** | Master EQ with presets (Flat, Bass Boost, Treble Boost, Vocal, Rock, Electronic) |
+| **Volume limiter** | Soft-clip peak limiter to prevent clipping distortion with configurable threshold |
+| **Audio ducking** | Automatically lower volume when a priority app (e.g. Discord) is active |
+| **Sample rate selector** | Choose between 44.1 kHz, 48 kHz, and 96 kHz sample rates |
+| **Waveform visualizer** | Scrolling real-time waveform display of audio output |
+| **Device groups / zones** | Save named device groups (e.g. "Office", "Streaming") for quick switching |
+| **Device drag-and-drop** | Reorder device cards by dragging them into your preferred order |
+| **Device health panel** | Detailed diagnostics showing per-device status, latency, errors, and performance |
+| **Timed recording** | Record system audio with an optional duration timer (0 = unlimited) |
+| **Compact mini mode** | Floating always-on-top mini window with VU meter, volume, and routing controls |
+| **Multi-monitor support** | Remembers window position per monitor configuration |
 
 ---
 
@@ -52,6 +67,7 @@ control per device.
 | **pycaw** | ≥ 20181226 *(optional — enables app mixer)* |
 | **comtypes** | 1.1.14+ *(required by pycaw)* |
 | **psutil** | 5.8+ *(optional — used by pycaw for process names)* |
+| **scipy** | 1.7+ *(optional — enables 10-band equalizer DSP)* |
 
 ---
 
@@ -90,6 +106,8 @@ dist/MultiOutputAudioConsole/MultiOutputAudioConsole.exe
 
 ## ⌨️ Keyboard Shortcuts
 
+### In-app shortcuts
+
 | Shortcut | Action |
 |---|---|
 | **Ctrl+R** | Start / Stop routing |
@@ -98,6 +116,16 @@ dist/MultiOutputAudioConsole/MultiOutputAudioConsole.exe
 | **Ctrl+↓** | Master volume down (−5%) |
 | **Ctrl+S** | Save current config as a profile |
 | **Ctrl+T** | Toggle dark / light theme |
+
+### Global hotkeys (work when minimised / in tray)
+
+| Shortcut | Action |
+|---|---|
+| **Ctrl+Alt+R** | Toggle routing on/off |
+| **Ctrl+Alt+M** | Toggle mute all |
+| **Ctrl+Alt+↑** | Master volume up (+5%) |
+| **Ctrl+Alt+↓** | Master volume down (−5%) |
+| **Ctrl+Alt+P** | Toggle recording |
 
 ---
 
@@ -204,20 +232,27 @@ multi-out-audio/
 ├── requirements.txt         # Python dependencies
 ├── run.bat                  # Windows one-click launcher
 ├── build.spec               # PyInstaller build spec
-├── audio_engine.py          # WASAPI loopback capture + multi-output fan-out
+├── audio_engine.py          # WASAPI loopback capture + multi-output fan-out + EQ/limiter
 ├── device_manager.py        # Windows audio session management (pycaw)
 ├── settings_manager.py      # Persistent settings (QSettings)
-├── profile_manager.py       # Audio profile / preset management
+├── profile_manager.py       # Audio profile / preset management + import/export
+├── equalizer.py             # 10-band parametric EQ with presets (scipy)
+├── hotkey_manager.py        # System-wide global hotkeys (Win32 API)
+├── autostart.py             # Windows startup registry management
 ├── ui/
-│   ├── main_window.py       # Main PyQt5 window
-│   ├── device_card.py       # Per-output-device control strip
+│   ├── main_window.py       # Main PyQt5 window with tabbed panels
+│   ├── device_card.py       # Per-output-device control strip (drag-and-drop)
 │   ├── app_strip.py         # Per-application volume strip
 │   ├── vu_meter.py          # Animated stereo VU meter widget
+│   ├── waveform_widget.py   # Scrolling real-time waveform visualizer
+│   ├── mini_window.py       # Compact floating mini-mode window
 │   └── styles.py            # Dark and light QSS themes
 └── tests/
     ├── test_audio_engine.py      # Audio router unit tests
     ├── test_settings_manager.py  # Settings persistence tests
-    └── test_profile_manager.py   # Profile management tests
+    ├── test_profile_manager.py   # Profile management tests
+    ├── test_equalizer.py         # Equalizer unit tests
+    └── test_hotkey_manager.py    # Hotkey manager tests
 ```
 
 ---
