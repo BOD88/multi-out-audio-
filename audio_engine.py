@@ -558,3 +558,8 @@ class AudioRouter:
     @property
     def active_device_ids(self) -> List[int]:
         return list(self._output_streams.keys())
+
+    @property
+    def failed_device_ids(self) -> List[int]:
+        """Return IDs of devices that have failed and may need reconnection."""
+        return list(self._failed_devices.keys())

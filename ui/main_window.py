@@ -1078,7 +1078,7 @@ class MainWindow(QMainWindow):
         """Periodically try to reconnect failed devices."""
         if not self._router.is_routing:
             return
-        for dev_id in list(self._router._failed_devices.keys()):
+        for dev_id in list(self._router.failed_device_ids):
             self._router.try_reconnect_device(dev_id)
 
     # ---------------------------------------------------------------- slots --
