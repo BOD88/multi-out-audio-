@@ -106,6 +106,10 @@ class AudioRouter:
                         if d["hostapi"] < len(all_apis)
                         else "Unknown"
                     )
+                    # Reported default high-latency value (seconds → ms)
+                    default_latency_ms = float(
+                        d.get("default_high_output_latency", 0.0)
+                    ) * 1000.0
                     devices.append(
                         {
                             "id": i,
@@ -115,6 +119,7 @@ class AudioRouter:
                             "default_samplerate": int(
                                 d.get("default_samplerate", 44_100)
                             ),
+                            "default_latency_ms": round(default_latency_ms, 2),
                         }
                     )
         except Exception as exc:
@@ -188,6 +193,43 @@ class AudioRouter:
 
     def get_device_delay(self, device_id: int) -> float:
         return self._device_delays.get(device_id, 0.0)
+
+    def compute_auto_sync_delays(
+        self, device_ids: List[int]
+    ) -> Dict[int, float]:
+        """
+        Compute per-device delay offsets so all devices are aligned to the
+        slowest one.  Uses the OS-reported default high-output latency to
+        estimate each device's inherent delay, then returns the additional
+        offset each device needs.
+
+        Returns a dict {device_id: delay_ms} where the slowest device gets 0
+        and every faster device gets a positive offset.
+        """
+        latencies: Dict[int, float] = {}
+        try:
+            all_devs = sd.query_devices()
+            for dev_id in device_ids:
+                if 0 <= dev_id < len(all_devs):
+                    lat = float(
+                        all_devs[dev_id].get("default_high_output_latency", 0.0)
+                    ) * 1000.0  # seconds → ms
+                    latencies[dev_id] = lat
+        except Exception as exc:
+            logger.warning("auto-sync: cannot query latencies: %s", exc)
+            return {d: 0.0 for d in device_ids}
+
+        if not latencies:
+            return {d: 0.0 for d in device_ids}
+
+        max_lat = max(latencies.values())
+        return {
+            dev_id: round(
+                min(max_lat - latencies.get(dev_id, max_lat), self.MAX_DELAY_MS),
+                1,
+            )
+            for dev_id in device_ids
+        }
 
     # ---------------------------------------------------------- performance --
 

@@ -403,6 +403,15 @@ class MainWindow(QMainWindow):
         self._btn_select_none.setToolTip("Disable all output devices")
         ctrl_row.addWidget(self._btn_select_none)
 
+        self._chk_auto_sync = QCheckBox("Auto-Sync Delay")
+        self._chk_auto_sync.setToolTip(
+            "Automatically delay faster devices to match the slowest one,\n"
+            "keeping all outputs in sync. Manually adjusting a device's\n"
+            "delay slider will override auto-sync for that device."
+        )
+        self._chk_auto_sync.setChecked(True)  # default on; restored later
+        ctrl_row.addWidget(self._chk_auto_sync)
+
         self._btn_refresh_devices = QPushButton("⟳  Refresh")
         self._btn_refresh_devices.setToolTip("Re-scan for audio output devices")
         ctrl_row.addWidget(self._btn_refresh_devices)
@@ -637,6 +646,7 @@ class MainWindow(QMainWindow):
         self._chk_auto_start.toggled.connect(
             lambda v: self._settings.save_auto_start(v)
         )
+        self._chk_auto_sync.toggled.connect(self._on_auto_sync_toggled)
 
         # Profiles
         self._btn_save_profile.clicked.connect(self._on_save_profile)
@@ -704,6 +714,7 @@ class MainWindow(QMainWindow):
         self._settings.save_enabled_devices(enabled_names)
         self._settings.save_device_volumes(vol_map)
         self._settings.save_device_delays(delay_map)
+        self._settings.save_auto_sync_delay(self._chk_auto_sync.isChecked())
 
     def _restore_settings(self) -> None:
         """Restore persisted state."""
@@ -746,6 +757,9 @@ class MainWindow(QMainWindow):
                 card.set_volume(saved_volumes[name])
             if name in saved_delays:
                 card.set_delay(saved_delays[name])
+
+        # Restore auto-sync delay setting
+        self._chk_auto_sync.setChecked(self._settings.get_auto_sync_delay())
 
         # Auto-start routing if enabled
         if self._settings.get_auto_start():
@@ -1110,6 +1124,10 @@ class MainWindow(QMainWindow):
             self._router.set_device_volume(dev_id, card.get_volume())
             self._router.set_device_delay(dev_id, card.get_delay())
 
+        # Apply auto-sync delays for enabled devices (before routing starts)
+        if self._chk_auto_sync.isChecked():
+            self._apply_auto_sync_delays(enabled_ids)
+
         try:
             self._router.start_routing(enabled_ids, source_device_id=source_id)
         except RuntimeError as exc:
@@ -1176,6 +1194,12 @@ class MainWindow(QMainWindow):
                 self._router.remove_output(device_id)
                 if device_id in self._device_cards:
                     self._device_cards[device_id].reset_meter()
+            # Re-compute auto-sync when device set changes
+            if self._chk_auto_sync.isChecked():
+                active_ids = [
+                    did for did, c in self._device_cards.items() if c.is_enabled()
+                ]
+                self._apply_auto_sync_delays(active_ids)
         except Exception as exc:
             self._show_error(str(exc))
 
@@ -1190,6 +1214,33 @@ class MainWindow(QMainWindow):
     @pyqtSlot(int, float)
     def _on_device_delay_changed(self, device_id: int, delay_ms: float) -> None:
         self._router.set_device_delay(device_id, delay_ms)
+
+    def _on_auto_sync_toggled(self, checked: bool) -> None:
+        """Handle auto-sync checkbox toggle."""
+        self._settings.save_auto_sync_delay(checked)
+        if checked:
+            # Clear manual overrides and re-apply auto-sync
+            for card in self._device_cards.values():
+                card.clear_manual_delay()
+            enabled_ids = [
+                dev_id
+                for dev_id, card in self._device_cards.items()
+                if card.is_enabled()
+            ]
+            if enabled_ids:
+                self._apply_auto_sync_delays(enabled_ids)
+
+    def _apply_auto_sync_delays(self, device_ids: List[int]) -> None:
+        """
+        Compute auto-sync delays and apply them to devices that have not been
+        manually overridden.
+        """
+        offsets = self._router.compute_auto_sync_delays(device_ids)
+        for dev_id, offset_ms in offsets.items():
+            card = self._device_cards.get(dev_id)
+            if card and not card.delay_manually_set:
+                card.set_delay_auto(offset_ms)
+                self._router.set_device_delay(dev_id, offset_ms)
 
     @pyqtSlot(int, float)
     def _on_app_volume_changed(self, pid: int, volume: float) -> None:

@@ -36,6 +36,7 @@ _K_FIRST_RUN = "ui/first_run_done"
 _K_PROFILES = "profiles/data"
 _K_DEVICE_DELAYS = "audio/device_delays"
 _K_DEVICE_ORDER = "ui/device_order"
+_K_AUTO_SYNC_DELAY = "audio/auto_sync_delay"
 
 
 class SettingsManager:
@@ -198,3 +199,14 @@ class SettingsManager:
             return json.loads(raw)
         except (json.JSONDecodeError, TypeError):
             return []
+
+    # ── auto-sync delay ──
+
+    def save_auto_sync_delay(self, enabled: bool) -> None:
+        self._set(_K_AUTO_SYNC_DELAY, enabled)
+
+    def get_auto_sync_delay(self) -> bool:
+        val = self._get(_K_AUTO_SYNC_DELAY, True)  # default ON
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val)

@@ -49,7 +49,9 @@ class DeviceCard(QFrame):
         self._device_id: int = device_info["id"]
         self._device_name: str = device_info["name"]
         self._hostapi: str = device_info.get("hostapi", "")
+        self._default_latency_ms: float = device_info.get("default_latency_ms", 0.0)
         self._active: bool = False  # True while routing is live for this device
+        self._delay_manually_set: bool = False  # True after user manually adjusts delay
 
         self.setObjectName("device_card")
         self.setFrameShape(QFrame.StyledPanel)
@@ -168,6 +170,7 @@ class DeviceCard(QFrame):
 
     def _on_delay_changed(self, value: int) -> None:
         self._lbl_delay.setText(f"{value} ms")
+        self._delay_manually_set = True
         self.delay_changed.emit(self._device_id, float(value))
 
     # ---------------------------------------------------------------- public --
@@ -202,6 +205,26 @@ class DeviceCard(QFrame):
         self._sld_delay.setValue(int(delay_ms))
         self._lbl_delay.setText(f"{int(delay_ms)} ms")
         self._sld_delay.blockSignals(False)
+
+    def set_delay_auto(self, delay_ms: float) -> None:
+        """Set delay without marking as manually overridden."""
+        self._sld_delay.blockSignals(True)
+        self._sld_delay.setValue(int(delay_ms))
+        self._lbl_delay.setText(f"{int(delay_ms)} ms")
+        self._sld_delay.blockSignals(False)
+        # Do not set _delay_manually_set — this is an automatic value
+
+    @property
+    def delay_manually_set(self) -> bool:
+        return self._delay_manually_set
+
+    def clear_manual_delay(self) -> None:
+        """Reset the manual override flag (e.g. when auto-sync is toggled on)."""
+        self._delay_manually_set = False
+
+    @property
+    def default_latency_ms(self) -> float:
+        return self._default_latency_ms
 
     def reset_meter(self) -> None:
         self._vu.reset()
