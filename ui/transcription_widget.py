@@ -18,7 +18,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import Qt, QMimeData, pyqtSignal, QThread
+from PyQt5.QtCore import Qt, QMimeData, pyqtSignal, pyqtSlot, QThread, QMetaObject, Q_ARG
 from PyQt5.QtGui import QDragEnterEvent, QDropEvent
 from PyQt5.QtWidgets import (
     QComboBox,
@@ -454,8 +454,6 @@ class TranscriptionWidget(QWidget):
         QMetaObject.invokeMethod(
             self, "_append_result", QtConst.QueuedConnection, Q_ARG(str, text)
         )
-
-    from PyQt5.QtCore import pyqtSlot
 
     @pyqtSlot(str)
     def _append_partial(self, text: str) -> None:

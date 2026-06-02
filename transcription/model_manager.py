@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
+_APP_VERSION = "2.0.0"
+
+
 _APP_DIR_NAME = "multi-output-audio"
 
 
@@ -103,7 +106,7 @@ def _download_file(
     progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> None:
     """Download *url* to *dest* with optional progress callback(received, total)."""
-    req = Request(url, headers={"User-Agent": "MultiOutputAudioConsole/2.0"})
+    req = Request(url, headers={"User-Agent": f"MultiOutputAudioConsole/{_APP_VERSION}"})
     with urlopen(req, timeout=60) as resp:
         total = int(resp.headers.get("Content-Length", 0))
         dest.parent.mkdir(parents=True, exist_ok=True)
