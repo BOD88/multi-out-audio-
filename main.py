@@ -71,9 +71,12 @@ def main() -> None:
 
     app = QApplication(sys.argv)
     app.setApplicationName("Multi-Output Audio Console")
-    app.setApplicationVersion("1.0.0")
+    app.setApplicationVersion("2.0.0")
     app.setOrganizationName("BOD88")
     app.setStyle("Fusion")  # Required base for dark QSS theme
+
+    # Keep app running when main window is hidden (system tray)
+    app.setQuitOnLastWindowClosed(False)
 
     # Default font
     font = QFont("Segoe UI", 10)

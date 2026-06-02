@@ -19,12 +19,24 @@ control per device.
 | **Master volume control** | One slider controls overall output level across every active device |
 | **Per-device volume** | Individual sliders for fine-tuned balance between each output |
 | **Per-device mute** | Instantly silence any individual output without stopping routing |
+| **Per-device delay compensation** | Adjust delay offset (0–500 ms) per device to sync wired and wireless outputs |
 | **Mute All** | One-click global mute for all devices at once |
 | **Live VU meters** | Stereo peak meters on the master bus and every output strip |
 | **Application mixer** | Per-app volume and mute control for apps currently playing audio |
 | **Hot-swap devices** | Enable / disable individual outputs mid-session without restarting |
 | **Source selector** | Choose which audio device acts as the capture source (loopback) |
 | **Low latency** | WASAPI loopback capture with ~21 ms latency at 48 kHz / 1024 block |
+| **Audio profiles** | Save and load named presets (e.g., "Movie Night", "Work", "Party") with one click |
+| **Persistent settings** | Window size, device selections, volumes, and preferences are remembered across sessions |
+| **System tray** | Minimise to tray with Start/Stop/Mute controls in the right-click menu |
+| **Dark / Light theme** | Toggle between dark and light themes (Ctrl+T) |
+| **Device search** | Filter the device list by name or API type |
+| **Keyboard shortcuts** | Ctrl+R (Start/Stop), Ctrl+M (Mute All), Ctrl+↑/↓ (volume), Ctrl+S (save profile) |
+| **Auto-start** | Option to automatically begin routing on launch with the last-used configuration |
+| **Device notifications** | Automatic detection when devices connect or disconnect |
+| **Error recovery** | Graceful handling of device failures with automatic reconnection attempts |
+| **Diagnostics log** | Built-in log panel showing real-time engine events and errors |
+| **CPU monitoring** | Status bar shows callback duration and buffer underrun count |
 
 ---
 
@@ -63,6 +75,30 @@ pip install -r requirements.txt
 python main.py
 ```
 
+### Option C — Standalone executable
+
+```bash
+# Build with PyInstaller
+pip install pyinstaller
+pyinstaller build.spec
+
+# Run the executable
+dist/MultiOutputAudioConsole/MultiOutputAudioConsole.exe
+```
+
+---
+
+## ⌨️ Keyboard Shortcuts
+
+| Shortcut | Action |
+|---|---|
+| **Ctrl+R** | Start / Stop routing |
+| **Ctrl+M** | Mute / Unmute all |
+| **Ctrl+↑** | Master volume up (+5%) |
+| **Ctrl+↓** | Master volume down (−5%) |
+| **Ctrl+S** | Save current config as a profile |
+| **Ctrl+T** | Toggle dark / light theme |
+
 ---
 
 ## 📖 How to Use
@@ -71,6 +107,7 @@ python main.py
 
 The **OUTPUT DEVICES** panel lists every audio device Windows knows about.
 Tick the checkbox next to each device you want to receive audio.
+Use the search bar to filter devices by name or API type.
 
 ### 2. Choose a Capture Source
 
@@ -80,7 +117,7 @@ In most cases this is your current default device (speakers or headphones).
 
 ### 3. Start Routing
 
-Click **▶ START ROUTING**.  
+Click **▶ START ROUTING** (or press **Ctrl+R**).  
 The selected output devices will all begin playing the same audio in sync.
 The status indicator turns green and VU meters animate.
 
@@ -89,8 +126,14 @@ The status indicator turns green and VU meters animate.
 - **Master Volume** — vertical slider on the left panel scales output on all devices proportionally.
 - **Per-device sliders** — fine-tune each output independently.
 - **Mute buttons** — silence any device instantly (🔊 → 🔇).
+- **Delay sliders** — add delay (ms) to sync wired and wireless outputs.
 
-### 5. Application Mixer
+### 5. Audio Profiles
+
+Click **💾 Save** in the toolbar to save your current configuration as a
+named profile. Select a profile from the dropdown to restore it instantly.
+
+### 6. Application Mixer
 
 The **APPLICATION MIXER** section shows every Windows audio session currently
 active.  Use the sliders to lower the volume of one app (e.g. Chrome) while
@@ -100,9 +143,15 @@ keeping another louder (e.g. Spotify).
 > virtual audio cable driver (e.g. VB-Audio Cable).  The application mixer
 > here controls per-app volume on the *current* default device.
 
-### 6. Stop Routing
+### 7. System Tray
 
-Click **⏹ STOP** to end all routing and release audio devices.
+When you close the window, the app minimises to the system tray. Double-click
+the tray icon to restore the window. Right-click for quick Start/Stop/Mute
+controls.
+
+### 8. Stop Routing
+
+Click **⏹ STOP** (or press **Ctrl+R**) to end all routing and release audio devices.
 
 ---
 
@@ -118,14 +167,32 @@ Click **⏹ STOP** to end all routing and release audio devices.
 
 Bluetooth devices sometimes need a few seconds to connect after being enabled.
 If a device shows an error, click **⟳ Refresh**, re-enable the device, and
-click **▶ START ROUTING** again.
+click **▶ START ROUTING** again. The app will also automatically attempt to
+reconnect failed devices.
 
 ### High latency / audio glitches
 
 - Reduce other CPU-intensive applications.
 - Try disconnecting and reconnecting Bluetooth devices (they often negotiate
   a higher-latency profile when multiple codecs compete).
+- Use the **delay slider** on each device card to compensate for different
+  device latencies.
 - Ensure your system is not in a power-saving mode.
+- Check the **Diagnostics Log** panel for error messages.
+
+---
+
+## 🧪 Running Tests
+
+```bash
+python -m pytest tests/ -v
+```
+
+Or with unittest:
+
+```bash
+python -m unittest discover tests -v
+```
 
 ---
 
@@ -133,17 +200,24 @@ click **▶ START ROUTING** again.
 
 ```
 multi-out-audio/
-├── main.py              # Entry point
-├── requirements.txt     # Python dependencies
-├── run.bat              # Windows one-click launcher
-├── audio_engine.py      # WASAPI loopback capture + multi-output fan-out
-├── device_manager.py    # Windows audio session management (pycaw)
-└── ui/
-    ├── main_window.py   # Main PyQt5 window
-    ├── device_card.py   # Per-output-device control strip
-    ├── app_strip.py     # Per-application volume strip
-    ├── vu_meter.py      # Animated stereo VU meter widget
-    └── styles.py        # Dark QSS theme
+├── main.py                  # Entry point
+├── requirements.txt         # Python dependencies
+├── run.bat                  # Windows one-click launcher
+├── build.spec               # PyInstaller build spec
+├── audio_engine.py          # WASAPI loopback capture + multi-output fan-out
+├── device_manager.py        # Windows audio session management (pycaw)
+├── settings_manager.py      # Persistent settings (QSettings)
+├── profile_manager.py       # Audio profile / preset management
+├── ui/
+│   ├── main_window.py       # Main PyQt5 window
+│   ├── device_card.py       # Per-output-device control strip
+│   ├── app_strip.py         # Per-application volume strip
+│   ├── vu_meter.py          # Animated stereo VU meter widget
+│   └── styles.py            # Dark and light QSS themes
+└── tests/
+    ├── test_audio_engine.py      # Audio router unit tests
+    ├── test_settings_manager.py  # Settings persistence tests
+    └── test_profile_manager.py   # Profile management tests
 ```
 
 ---
