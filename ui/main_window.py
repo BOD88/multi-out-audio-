@@ -73,6 +73,7 @@ from ui.device_card import DeviceCard
 from ui.app_strip import AppStrip
 from ui.vu_meter import VUMeter
 from ui.styles import COLOURS, COLOURS_LIGHT, STYLESHEET, STYLESHEET_LIGHT
+from ui.transcription_widget import TranscriptionWidget
 
 logger = logging.getLogger(__name__)
 
@@ -502,6 +503,7 @@ class MainWindow(QMainWindow):
         self._lower_tabs.addTab(self._build_ducking_panel(), "🔉 Ducking")
         self._lower_tabs.addTab(self._build_groups_panel(), "📁 Groups")
         self._lower_tabs.addTab(self._build_diagnostics_panel(), "📊 Health")
+        self._lower_tabs.addTab(self._build_transcription_panel(), "🎤 Transcribe")
         self._lower_tabs.addTab(self._build_log_panel(), "📋 Log")
 
         splitter.addWidget(self._lower_tabs)
@@ -901,6 +903,12 @@ class MainWindow(QMainWindow):
         layout.addLayout(btn_row)
 
         return panel
+
+    # ── Transcription panel ──────────────────────────────────────────────────
+
+    def _build_transcription_panel(self) -> QWidget:
+        self._transcription_widget = TranscriptionWidget(self._colours, self)
+        return self._transcription_widget
 
     # ── Status bar ────────────────────────────────────────────────────────────
 
@@ -2407,6 +2415,9 @@ class MainWindow(QMainWindow):
             # Close mini window
             if self._mini_window is not None:
                 self._mini_window.close()
+            # Clean up transcription
+            if hasattr(self, '_transcription_widget'):
+                self._transcription_widget.cleanup()
             self._tray_icon.hide()
             # Remove our log handler to prevent errors during shutdown
             logging.getLogger().removeHandler(self._log_handler)
