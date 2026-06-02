@@ -42,6 +42,7 @@ class DeviceCard(QFrame):
     enabled_changed = pyqtSignal(int, bool)
     volume_changed = pyqtSignal(int, float)
     mute_changed = pyqtSignal(int, bool)
+    delay_changed = pyqtSignal(int, float)  # (device_id, delay_ms)
 
     def __init__(self, device_info: dict, parent=None) -> None:
         super().__init__(parent)
@@ -121,12 +122,37 @@ class DeviceCard(QFrame):
         self._btn_mute.setToolTip("Mute this device")
         root.addWidget(self._btn_mute)
 
+        # ── Delay slider ──
+        delay_col = QVBoxLayout()
+        delay_col.setSpacing(2)
+
+        self._sld_delay = QSlider(Qt.Horizontal)
+        self._sld_delay.setRange(0, 500)
+        self._sld_delay.setValue(0)
+        self._sld_delay.setFixedWidth(80)
+        self._sld_delay.setToolTip(
+            "Delay offset (ms) — compensate for latency differences\n"
+            "between wired and wireless devices"
+        )
+        delay_col.addWidget(self._sld_delay)
+
+        self._lbl_delay = QLabel("0 ms")
+        self._lbl_delay.setAlignment(Qt.AlignCenter)
+        self._lbl_delay.setStyleSheet(
+            f"color: {COLOURS['text_secondary']}; font-size: 10px;"
+        )
+        self._lbl_delay.setFixedWidth(44)
+        delay_col.addWidget(self._lbl_delay)
+
+        root.addLayout(delay_col)
+
     # ---------------------------------------------------------------- signals --
 
     def _connect_signals(self) -> None:
         self._chk.toggled.connect(self._on_enable_toggled)
         self._slider.valueChanged.connect(self._on_volume_changed)
         self._btn_mute.toggled.connect(self._on_mute_toggled)
+        self._sld_delay.valueChanged.connect(self._on_delay_changed)
 
     def _on_enable_toggled(self, checked: bool) -> None:
         self._update_active_style(checked)
@@ -139,6 +165,10 @@ class DeviceCard(QFrame):
     def _on_mute_toggled(self, checked: bool) -> None:
         self._btn_mute.setText("🔇" if checked else "🔊")
         self.mute_changed.emit(self._device_id, checked)
+
+    def _on_delay_changed(self, value: int) -> None:
+        self._lbl_delay.setText(f"{value} ms")
+        self.delay_changed.emit(self._device_id, float(value))
 
     # ---------------------------------------------------------------- public --
 
@@ -163,6 +193,15 @@ class DeviceCard(QFrame):
 
     def set_levels(self, left: float, right: float) -> None:
         self._vu.set_levels(left, right)
+
+    def get_delay(self) -> float:
+        return float(self._sld_delay.value())
+
+    def set_delay(self, delay_ms: float) -> None:
+        self._sld_delay.blockSignals(True)
+        self._sld_delay.setValue(int(delay_ms))
+        self._lbl_delay.setText(f"{int(delay_ms)} ms")
+        self._sld_delay.blockSignals(False)
 
     def reset_meter(self) -> None:
         self._vu.reset()
