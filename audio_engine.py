@@ -631,6 +631,10 @@ class AudioRouter:
     def is_recording(self) -> bool:
         return self._is_recording
 
+    def set_source_device(self, device_id: int) -> None:
+        """Set the source device to capture audio from."""
+        self._source_device_id = device_id
+
     # ------------------------------------------------------------ recording --
 
     @staticmethod
@@ -808,13 +812,14 @@ class AudioRouter:
                 "-movflags", "+faststart",
                 output_path,
             ]
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-            )
+            run_kwargs = {
+                "capture_output": True,
+                "text": True,
+                "timeout": 120,
+            }
+            if sys.platform == "win32":
+                run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            result = subprocess.run(cmd, **run_kwargs)
             if result.returncode != 0:
                 raise RuntimeError(result.stderr or f"ffmpeg exited with code {result.returncode}")
 

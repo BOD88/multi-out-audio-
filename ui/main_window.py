@@ -1168,7 +1168,7 @@ class MainWindow(QMainWindow):
         if not self._router.is_routing:
             source_id = self._cmb_source.currentData()
             if source_id is not None:
-                self._router._source_device_id = source_id
+                self._router.set_source_device(source_id)
 
         self._router.start_recording()
 
@@ -1186,7 +1186,8 @@ class MainWindow(QMainWindow):
 
         if not path:
             # User cancelled — still stop recording but discard
-            self._router.stop_recording(os.path.join(tempfile.gettempdir(), "_discard.m4a"))
+            discard_path = os.path.join(tempfile.mkdtemp(), "discard.m4a")
+            self._router.stop_recording(discard_path)
             logger.info("Recording discarded (user cancelled save)")
             return
 
